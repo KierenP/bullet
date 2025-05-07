@@ -12,7 +12,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r46_768x8-1024x2-1x8"
+        "bullet_r47"
     };
 }
 
@@ -38,7 +38,7 @@ fn main() {
         .loss_fn(Loss::SigmoidMSE)
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
-        .feature_transformer(1024)
+        .feature_transformer(2048)
         .activate(Activation::SCReLU)
         .add_layer(1)
         .build();
@@ -54,7 +54,7 @@ fn main() {
         },
         wdl_scheduler: wdl::ConstantWDL { value: 0.3 },
         lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: 400 },
-        save_rate: 10,
+        save_rate: 100,
     };
 
     let settings = LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 512 };
