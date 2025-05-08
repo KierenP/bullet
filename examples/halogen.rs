@@ -12,7 +12,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r46_768x8-1024x2-1x8"
+        "bullet_r48_768x8-2048x2-mul-1x8"
     };
 }
 
@@ -38,8 +38,9 @@ fn main() {
         .loss_fn(Loss::SigmoidMSE)
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
-        .feature_transformer(1024)
-        .activate(Activation::SCReLU)
+        .feature_transformer(2048)
+        .activate(Activation::CReLU)
+        .add_pairwise_mul()
         .add_layer(1)
         .build();
 
