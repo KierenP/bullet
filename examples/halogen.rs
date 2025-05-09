@@ -12,7 +12,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r46_768x8-1024x2-1x8"
+        "halogen_r49"
     };
 }
 
@@ -39,7 +39,8 @@ fn main() {
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
         .feature_transformer(1024)
-        .activate(Activation::SCReLU)
+        .activate(Activation::CReLU)
+        .add_pairwise_mul()
         .add_layer(1)
         .build();
 
