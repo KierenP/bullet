@@ -4,6 +4,7 @@ use bullet_lib::{
     nn::optimiser,
     trainer::{
         default::loader,
+        save::QuantTarget,
         schedule::{lr, wdl, TrainingSchedule, TrainingSteps},
         settings::LocalSettings,
     },
@@ -12,7 +13,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r46_768x8-1024x2-1x8"
+        "bullet_r50"
     };
 }
 
@@ -33,13 +34,17 @@ fn main() {
     ]);
 
     let mut trainer = TrainerBuilder::default()
-        .quantisations(&[255, 64])
+        .advanced_quantisations(&[QuantTarget::I16(255), QuantTarget::I16(64), QuantTarget::Float, QuantTarget::Float])
         .optimiser(optimiser::Ranger)
         .loss_fn(Loss::SigmoidMSE)
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
         .feature_transformer(1024)
         .activate(Activation::SCReLU)
+        .add_layer(16)
+        .activate(Activation::CReLU)
+        .add_layer(32)
+        .activate(Activation::CReLU)
         .add_layer(1)
         .build();
 
@@ -54,7 +59,7 @@ fn main() {
         },
         wdl_scheduler: wdl::ConstantWDL { value: 0.3 },
         lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: 400 },
-        save_rate: 10,
+        save_rate: 100,
     };
 
     let settings = LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 512 };
