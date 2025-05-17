@@ -26,8 +26,10 @@ pub type SparseMatrix = tensor::SparseMatrix<ExecutionContext>;
 pub type Matrix = tensor::Matrix<ExecutionContext>;
 pub type Tensor = tensor::Tensor<ExecutionContext>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum DeviceError {
+    #[default]
+    Generic,
     Cuda(bindings::cudaError_t),
     Cublas(bindings::cublasStatus_t),
     ExpectedIllegalAddressAccess,
@@ -236,6 +238,7 @@ impl Device for ExecutionContext {
         input_a_grad: &mut Self::BufferF32,
         shape_a: Shape,
         input_b: &Self::BufferI32,
+        input_b_vals: Option<&Self::BufferF32>,
         shape_b: Shape,
         nnz: usize,
         input_c: Option<&Self::BufferF32>,
@@ -252,6 +255,7 @@ impl Device for ExecutionContext {
             input_a_grad,
             shape_a,
             input_b,
+            input_b_vals,
             shape_b,
             nnz,
             input_c,
@@ -269,6 +273,7 @@ impl Device for ExecutionContext {
         input_a: &Self::BufferF32,
         shape_a: Shape,
         input_b: &Self::BufferI32,
+        input_b_vals: Option<&Self::BufferF32>,
         shape_b: Shape,
         nnz: usize,
         input_c: Option<&Self::BufferF32>,
@@ -282,6 +287,7 @@ impl Device for ExecutionContext {
             input_a,
             shape_a,
             input_b,
+            input_b_vals,
             shape_b,
             nnz,
             input_c,

@@ -13,7 +13,7 @@ use crate::{
     value::builder::{Bucket, NoOutputBuckets, OutputBucket},
 };
 
-use super::{AdditionalTrainerInputs, Trainer};
+use super::{loader::B, AdditionalTrainerInputs, Trainer, Wgt};
 
 use bullet_core::optimiser::Optimiser;
 
@@ -39,9 +39,11 @@ struct NodeType {
     op: OpType,
 }
 
-pub struct TrainerBuilder<T, U, O = optimiser::AdamW> {
+pub struct TrainerBuilder<T: SparseInputType, U, O = optimiser::AdamW> {
     input_getter: Option<T>,
     bucket_getter: U,
+    blend_getter: B<T>,
+    weight_getter: Option<Wgt<T>>,
     ft_out_size: usize,
     nodes: Vec<NodeType>,
     quantisations: Option<Vec<QuantTarget>>,
@@ -54,6 +56,7 @@ pub struct TrainerBuilder<T, U, O = optimiser::AdamW> {
     output_bucket_ft_biases: bool,
     profile_ft: bool,
     compile_args: GraphCompileArgs,
+    quant_round: bool,
 }
 
 impl<T: SparseInputType, O: OptimiserType> Default for TrainerBuilder<T, NoOutputBuckets, O> {
@@ -61,6 +64,8 @@ impl<T: SparseInputType, O: OptimiserType> Default for TrainerBuilder<T, NoOutpu
         Self {
             input_getter: None,
             bucket_getter: NoOutputBuckets,
+            blend_getter: |_, wdl| wdl,
+            weight_getter: None,
             ft_out_size: 0,
             nodes: Vec::new(),
             quantisations: None,
@@ -73,6 +78,7 @@ impl<T: SparseInputType, O: OptimiserType> Default for TrainerBuilder<T, NoOutpu
             output_bucket_ft_biases: false,
             profile_ft: false,
             compile_args: GraphCompileArgs::default(),
+            quant_round: false,
         }
     }
 }
@@ -122,6 +128,12 @@ impl<T: SparseInputType, U, O: OptimiserType> TrainerBuilder<T, U, O> {
         self
     }
 
+    /// Round rather than truncate when quantising.
+    pub fn round_in_quantisation(mut self) -> Self {
+        self.quant_round = true;
+        self
+    }
+
     /// Sets the size of the feature-transformer.
     /// Must be done before all other layers.
     pub fn feature_transformer(mut self, size: usize) -> Self {
@@ -137,6 +149,17 @@ impl<T: SparseInputType, U, O: OptimiserType> TrainerBuilder<T, U, O> {
 
     pub fn output_bucket_ft_biases(mut self) -> Self {
         self.output_bucket_ft_biases = true;
+        self
+    }
+
+    pub fn wdl_adjuster(mut self, b: B<T>) -> Self {
+        self.blend_getter = b;
+        self
+    }
+
+    pub fn datapoint_weight_function(mut self, f: Wgt<T>) -> Self {
+        assert!(self.weight_getter.is_none(), "Position weight function is already set!");
+        self.weight_getter = Some(f);
         self
     }
 
@@ -237,6 +260,8 @@ impl<T: SparseInputType, O: OptimiserType> TrainerBuilder<T, NoOutputBuckets, O>
         TrainerBuilder {
             input_getter: self.input_getter,
             bucket_getter: OutputBucket(bucket_getter),
+            blend_getter: self.blend_getter,
+            weight_getter: self.weight_getter,
             ft_out_size: self.ft_out_size,
             nodes: self.nodes,
             quantisations: self.quantisations,
@@ -249,6 +274,7 @@ impl<T: SparseInputType, O: OptimiserType> TrainerBuilder<T, NoOutputBuckets, O>
             output_bucket_ft_biases: self.output_bucket_ft_biases,
             profile_ft: self.profile_ft,
             compile_args: self.compile_args,
+            quant_round: self.quant_round,
         }
     }
 }
@@ -289,8 +315,16 @@ where
             (QuantTarget::Float, QuantTarget::Float)
         };
 
-        saved_format.push(SavedFormat::new(&w, wquant, layout));
-        saved_format.push(SavedFormat::new(&b, bquant, Layout::Normal));
+        let mut wfmt = SavedFormat::new(&w, wquant, layout);
+        let mut bfmt = SavedFormat::new(&b, bquant, Layout::Normal);
+
+        if self.quant_round {
+            wfmt = wfmt.round();
+            bfmt = bfmt.round();
+        }
+
+        saved_format.push(wfmt);
+        saved_format.push(bfmt);
     }
 
     pub fn build(self) -> Trainer<O::Optimiser, T, U::Inner> {
@@ -412,12 +446,17 @@ where
         let output_node = out.node();
         let output_size = prev_size;
         let targets = builder.new_dense_input("targets", Shape::new(output_size, 1));
-        match self.loss {
+        let raw_loss = match self.loss {
             Loss::None => panic!("No loss function specified!"),
             Loss::SigmoidMSE => out.activate(Activation::Sigmoid).squared_error(targets),
             Loss::SigmoidMPE(power) => out.activate(Activation::Sigmoid).power_error(targets, power),
             Loss::SoftmaxCrossEntropy => out.softmax_crossentropy_loss(targets),
         };
+
+        if self.weight_getter.is_some() {
+            let entry_weights = builder.new_dense_input("entry_weights", Shape::new(1, 1));
+            let _ = entry_weights * raw_loss;
+        }
 
         #[allow(clippy::default_constructed_unit_structs)]
         let ctx = ExecutionContext::default();
@@ -459,6 +498,8 @@ where
             optimiser: Optimiser::new(graph, Default::default()).unwrap(),
             input_getter: input_getter.clone(),
             output_getter: self.bucket_getter.inner(),
+            blend_getter: self.blend_getter,
+            weight_getter: self.weight_getter,
             output_node,
             additional_inputs: AdditionalTrainerInputs { wdl: output_size == 3 },
             saved_format: saved_format.clone(),
