@@ -12,7 +12,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r53-768x8-1536x2-1x8"
+        "bullet_r54-768x8-1536x2-pw-1x8"
     };
 }
 
@@ -39,7 +39,8 @@ fn main() {
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
         .feature_transformer(1536)
-        .activate(Activation::SCReLU)
+        .activate(Activation::CReLU)
+        .add_pairwise_mul()
         .add_layer(1)
         .build();
 
@@ -77,5 +78,5 @@ fn main() {
         println!("EVAL: {}", 160.0 * eval);
     }
 
-    trainer.save_quantised("nets/bullet_r53-768x8-1536x2-1x8-round.nn").unwrap();
+    trainer.save_quantised("nets/bullet_r54-768x8-1536x2-pw-1x8.nn").unwrap();
 }
