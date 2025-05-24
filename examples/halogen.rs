@@ -14,7 +14,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r55-(768x8hm-1024)-dp-pw-(16-32-1)x8"
+        "bullet_r57-768x8hm-1024-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -46,6 +46,7 @@ fn main() {
         .add_pairwise_mul()
         .add_layer(16)
         .activate(Activation::CReLU)
+        .add_dual_activation()
         .add_layer(32)
         .activate(Activation::CReLU)
         .add_layer(1)
@@ -86,8 +87,8 @@ fn main() {
     trainer.optimiser_mut().set_params_for_weight("l3w", float_params);
     trainer.optimiser_mut().set_params_for_weight("l3b", float_params);
 
-    trainer.load_from_checkpoint("checkpoints/bullet_r55-(768x8hm-1024)-dp-pw-(16-32-1)x8-400");
-    //trainer.run(&schedule, &settings, &data_loader);
+    //trainer.load_from_checkpoint("checkpoints/...");
+    trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -102,5 +103,5 @@ fn main() {
         println!("EVAL: {}", 160.0 * eval);
     }
 
-    //trainer.save_quantised(NET_ID).unwrap();
+    trainer.save_quantised(&format!("nets/{}", NET_ID)).unwrap();
 }
