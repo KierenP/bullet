@@ -14,7 +14,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r58-768x8hm-768-dp-pw-16-32-1x8"
+        "bullet_r59-768x8hm-1280-dp-pw-16-32-1x8"
     };
 }
 
@@ -41,7 +41,7 @@ fn main() {
         .loss_fn(Loss::SigmoidMSE)
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
-        .feature_transformer(768)
+        .feature_transformer(1280)
         .activate(Activation::CReLU)
         .add_pairwise_mul()
         .add_layer(16)
@@ -102,5 +102,5 @@ fn main() {
         println!("EVAL: {}", 160.0 * eval);
     }
 
-    trainer.save_quantised(&format!("nets/{}", NET_ID)).unwrap();
+    trainer.save_quantised(&format!("nets/{}.nn", NET_ID)).unwrap();
 }
