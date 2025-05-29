@@ -14,7 +14,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r59-768x8hm-1280-dp-pw-16-32-1x8"
+        "bullet_r60-768x8hm-1024-dp-pw-16-32-1x8"
     };
 }
 
@@ -41,7 +41,7 @@ fn main() {
         .loss_fn(Loss::SigmoidMSE)
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
-        .feature_transformer(1280)
+        .feature_transformer(1024)
         .activate(Activation::CReLU)
         .add_pairwise_mul()
         .add_layer(16)
@@ -58,10 +58,10 @@ fn main() {
             batch_size: 16_384,
             batches_per_superbatch: 6104,
             start_superbatch: 1,
-            end_superbatch: 400,
+            end_superbatch: 1000,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 0.3 },
-        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: 400 },
+        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: 1000 },
         save_rate: 100,
     };
 
