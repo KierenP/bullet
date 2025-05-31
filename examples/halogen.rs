@@ -12,7 +12,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r46_768x8-1024x2-1x8"
+        "bullet_r62_768x8-1024x2-1x8"
     };
 }
 
@@ -50,11 +50,11 @@ fn main() {
             batch_size: 16_384,
             batches_per_superbatch: 6104,
             start_superbatch: 1,
-            end_superbatch: 400,
+            end_superbatch: 1000,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 0.3 },
-        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: 400 },
-        save_rate: 10,
+        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: 1000 },
+        save_rate: 100,
     };
 
     let settings = LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 512 };
@@ -77,5 +77,5 @@ fn main() {
         println!("EVAL: {}", 160.0 * eval);
     }
 
-    //trainer.save_quantised("nets/bullet_r46_768x8-1024x2-1x8-round.nn").unwrap();
+    trainer.save_quantised("nets/bullet_r62_768x8-1024x2-1x8-e1000.nn").unwrap();
 }
