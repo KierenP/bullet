@@ -12,7 +12,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r62_768x8-1024x2-1x8"
+        "bullet_r66_768x8-1024x2-1x8"
     };
 }
 
@@ -35,7 +35,7 @@ fn main() {
     let mut trainer = TrainerBuilder::default()
         .quantisations(&[255, 64])
         .optimiser(optimiser::Ranger)
-        .loss_fn(Loss::SigmoidMSE)
+        .loss_fn(Loss::SigmoidMPE(2.5))
         .input(inputs)
         .output_buckets(MaterialCount::<8>)
         .feature_transformer(1024)
@@ -77,5 +77,5 @@ fn main() {
         println!("EVAL: {}", 160.0 * eval);
     }
 
-    trainer.save_quantised("nets/bullet_r62_768x8-1024x2-1x8-e1000.nn").unwrap();
+    trainer.save_quantised("nets/bullet_r66_768x8-1024x2-1x8-e1000.nn").unwrap();
 }
