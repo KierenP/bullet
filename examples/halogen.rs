@@ -20,7 +20,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r76-768x12hm-1536-dp-1x8"
+        "bullet_r77-768x16hm-1536-dp-1x8"
     };
 }
 
@@ -32,14 +32,14 @@ fn main() {
     const NUM_OUTPUT_BUCKETS: usize = 8;
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
-        0,  1,  2,  3,
-        4,  5,  6,  7,
-        8,  8,  9,  9,
-        8,  8,  9,  9,
-        10, 10, 10, 10,
-        10, 10, 10, 10,
-        11, 11, 11, 11,
-        11, 11, 11, 11,
+         0,  1,  2,  3,
+         4,  5,  6,  7,
+         8,  9, 10, 11,
+         8,  9, 10, 11,
+        12, 12, 13, 13,
+        12, 12, 13, 13,
+        14, 14, 15, 15,
+        14, 14, 15, 15,
     ];
     const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
 
