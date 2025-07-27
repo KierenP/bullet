@@ -21,7 +21,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r81-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r83-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -117,7 +117,7 @@ fn main() {
     trainer.optimiser_mut().set_params_for_weight("l3w", float_params);
     trainer.optimiser_mut().set_params_for_weight("l3b", float_params);
 
-    let num_superbatches = 1000;
+    let num_superbatches = 400;
     let schedule = TrainingSchedule {
         net_id: NET_ID.to_string(),
         eval_scale: 160.0,
