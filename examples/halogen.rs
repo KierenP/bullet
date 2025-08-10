@@ -11,17 +11,17 @@ use bullet_lib::{
         save::SavedFormat,
         schedule::{lr, wdl, TrainingSchedule, TrainingSteps},
         settings::LocalSettings,
-        NetworkTrainer,
     },
     value::{
         loader::{viribinpack, ViriBinpackLoader},
         ValueTrainerBuilder,
     },
 };
+use viriformat::dataformat::Filter;
 
 macro_rules! net_id {
     () => {
-        "bullet_r81-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r87-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -109,13 +109,12 @@ fn main() {
     // allow float weights to have a large range
     let float_params = RangerParams { max_weight: 128.0, min_weight: -128.0, ..Default::default() };
 
-    trainer.set_optimiser_params(RangerParams::default());
-    trainer.optimiser_mut().set_params_for_weight("l0w", l0_params);
-    trainer.optimiser_mut().set_params_for_weight("l0f", l0_params);
-    trainer.optimiser_mut().set_params_for_weight("l2w", float_params);
-    trainer.optimiser_mut().set_params_for_weight("l2b", float_params);
-    trainer.optimiser_mut().set_params_for_weight("l3w", float_params);
-    trainer.optimiser_mut().set_params_for_weight("l3b", float_params);
+    trainer.optimiser.set_params_for_weight("l0w", l0_params);
+    trainer.optimiser.set_params_for_weight("l0f", l0_params);
+    trainer.optimiser.set_params_for_weight("l2w", float_params);
+    trainer.optimiser.set_params_for_weight("l2b", float_params);
+    trainer.optimiser.set_params_for_weight("l3w", float_params);
+    trainer.optimiser.set_params_for_weight("l3b", float_params);
 
     let num_superbatches = 1000;
     let schedule = TrainingSchedule {
@@ -140,7 +139,11 @@ fn main() {
         viribinpack::ViriFilter::Builtin(viriformat::dataformat::Filter {
             min_ply: 0,
             min_pieces: 0,
-            ..Default::default()
+            //filter_tactical: true,
+            //filter_check: true,
+            random_fen_skipping: true,
+            random_fen_skip_probability: 0.5,
+            ..Filter::UNRESTRICTED
         }),
     );
 
