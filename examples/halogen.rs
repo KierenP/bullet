@@ -21,7 +21,7 @@ use viriformat::dataformat::Filter;
 
 macro_rules! net_id {
     () => {
-        "bullet_r87-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r88-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -139,8 +139,8 @@ fn main() {
         viribinpack::ViriFilter::Builtin(viriformat::dataformat::Filter {
             min_ply: 0,
             min_pieces: 0,
-            //filter_tactical: true,
-            //filter_check: true,
+            filter_tactical: true,
+            filter_check: true,
             random_fen_skipping: true,
             random_fen_skip_probability: 0.5,
             ..Filter::UNRESTRICTED
