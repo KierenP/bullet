@@ -21,7 +21,7 @@ use viriformat::dataformat::Filter;
 
 macro_rules! net_id {
     () => {
-        "bullet_r88-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r89-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -142,7 +142,7 @@ fn main() {
             filter_tactical: true,
             filter_check: true,
             random_fen_skipping: true,
-            random_fen_skip_probability: 0.5,
+            random_fen_skip_probability: 0.9,
             ..Filter::UNRESTRICTED
         }),
     );
