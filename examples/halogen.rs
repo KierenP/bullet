@@ -21,7 +21,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r81-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r90-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -92,6 +92,10 @@ fn main() {
             let ntm_subnet = l0.forward(ntm).crelu().pairwise_mul();
             let mut out = stm_subnet.concat(ntm_subnet);
 
+            // add extra loss term to encourage sparsity
+            let ones = builder.new_constant(Shape::new(1, ft_size), &vec![1.0; ft_size]);
+            let nz_pen = 0.00001 * ones.matmul(out);
+
             // layerstack inference
             out = l1.forward(out).select(buckets);
             out = out.concat(out.abs_pow(2.0)).crelu();
@@ -100,7 +104,7 @@ fn main() {
 
             // squared error loss
             let loss = out.sigmoid().squared_error(targets);
-            (out, loss)
+            (out, loss + nz_pen)
         });
 
     // cap l1 weights to 1.98 after factoriser is applied
