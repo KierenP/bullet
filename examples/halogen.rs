@@ -21,7 +21,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r91-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r92-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -127,7 +127,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: num_superbatches,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.6 },
+        wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
         lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: num_superbatches },
         save_rate: 100,
     };
