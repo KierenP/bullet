@@ -21,7 +21,7 @@ use bullet_lib::{
 
 macro_rules! net_id {
     () => {
-        "bullet_r100-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r101-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -134,7 +134,7 @@ fn main() {
 
     let settings = LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 32 };
     let data_loader = ViriBinpackLoader::new(
-        "..\\..\\chess\\data\\halogen_12_1b.viri",
+        "..\\..\\chess\\data\\datagen20.viri",
         1024 * 32,
         4,
         viribinpack::ViriFilter::Builtin(viriformat::dataformat::Filter {
