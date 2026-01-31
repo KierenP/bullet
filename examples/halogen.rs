@@ -18,15 +18,9 @@ use bullet_lib::{
     },
 };
 
-macro_rules! net_id {
-    () => {
-        "bullet_r108-768x8hm-1536-dp-pw-16-da-32-1x8"
-    };
-}
-
-const NET_ID: &str = net_id!();
-
 fn main() {
+    const NET_ID: &str = "bullet_r109-768x8hm-1536-dp-pw-16-da-32-1x8";
+
     // network hyperparams
     let ft_size = 1536;
     let l1_size = 16;
@@ -111,23 +105,23 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l3w", float_params);
     trainer.optimiser.set_params_for_weight("l3b", float_params);
 
-    let num_superbatches = 1000;
-    let schedule = TrainingSchedule {
-        net_id: NET_ID.to_string(),
+    // ============== STAGE 1: Main training on datagen3-22 ==============
+    let stage1_superbatches = 1000;
+    let stage1 = TrainingSchedule {
+        net_id: format!("{NET_ID}-stage1"),
         eval_scale: 160.0,
         steps: TrainingSteps {
             batch_size: 16_384,
             batches_per_superbatch: 6104,
             start_superbatch: 1,
-            end_superbatch: num_superbatches,
+            end_superbatch: stage1_superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
-        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: num_superbatches },
+        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: stage1_superbatches },
         save_rate: 100,
     };
 
-    let settings = LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 32 };
-    let data_loader = ViriBinpackLoader::new(
+    let data_loader1 = ViriBinpackLoader::new(
         "..\\..\\chess\\data\\datagen3-22.viri",
         1024 * 32,
         4,
@@ -138,8 +132,39 @@ fn main() {
         }),
     );
 
-    //trainer.load_from_checkpoint(...);
-    trainer.run(&schedule, &settings, &data_loader);
+    // ============== STAGE 2: Fine-tuning on datagen18-22 ==============
+    let stage2_superbatches = 100;
+    let stage2 = TrainingSchedule {
+        net_id: format!("{NET_ID}-stage2"),
+        eval_scale: 160.0,
+        steps: TrainingSteps {
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
+            start_superbatch: 1,
+            end_superbatch: stage2_superbatches,
+        },
+        wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
+        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.0001, final_lr: 0.0, final_superbatch: stage2_superbatches },
+        save_rate: 100,
+    };
+
+    let data_loader2 = ViriBinpackLoader::new(
+        "..\\..\\chess\\data\\datagen18-22.viri",
+        1024 * 32,
+        4,
+        viribinpack::ViriFilter::Builtin(viriformat::dataformat::Filter {
+            min_ply: 0,
+            min_pieces: 0,
+            ..Default::default()
+        }),
+    );
+
+    // ============== Run training pipeline ==============
+    let settings = LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 32 };
+
+    //trainer.run(&stage1, &settings, &data_loader1);
+    trainer.load_from_checkpoint("checkpoints/bullet_r108-768x8hm-1536-dp-pw-16-da-32-1x8-1000");
+    trainer.run(&stage2, &settings, &data_loader2);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -154,5 +179,5 @@ fn main() {
         println!("EVAL: {}", 160.0 * eval);
     }
 
-    trainer.save_quantised(&format!("nets/{NET_ID}-e{num_superbatches}.nn")).unwrap();
+    trainer.save_quantised(&format!("nets/{NET_ID}-stage2-e{stage2_superbatches}.nn")).unwrap();
 }
