@@ -14,3 +14,4 @@ bulletformat = { workspace = true }
 montyformat = { workspace = true }
 structopt = "0.3.26"
 viriformat = { workspace = true }
+plotters = "0.3.7"
