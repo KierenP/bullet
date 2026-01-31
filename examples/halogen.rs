@@ -19,7 +19,7 @@ use bullet_lib::{
 };
 
 fn main() {
-    const NET_ID: &str = "bullet_r109-768x8hm-1536-dp-pw-16-da-32-1x8";
+    const NET_ID: &str = "bullet_r110-768x8hm-1536-dp-pw-16-da-32-1x8";
 
     // network hyperparams
     let ft_size = 1536;
@@ -143,7 +143,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: stage2_superbatches,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
+        wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
         lr_scheduler: lr::CosineDecayLR { initial_lr: 0.0001, final_lr: 0.0, final_superbatch: stage2_superbatches },
         save_rate: 100,
     };
