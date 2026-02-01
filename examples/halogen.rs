@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use bullet_lib::{
     game::{
         inputs::{ChessBucketsMirrored, get_num_buckets},
@@ -18,9 +21,189 @@ use bullet_lib::{
     },
 };
 
+use viriformat::chess::board::Board;
+
+/// Enable debug printing of piece count distribution statistics
+const DEBUG_DISTRIBUTION: bool = false;
+/// How often to print debug info (every N positions seen)
+const DEBUG_PRINT_INTERVAL: u64 = 10_000_000;
+
+/// Target distribution for piece counts [0..=32].
+/// Values represent the desired relative frequency (will be normalized).
+/// Higher values = more positions with that piece count in the output.
+/// Values based on Stockfish's PyTorch NNUE trainer (0-2 pieces set to 0 as impossible)
+#[rustfmt::skip]
+const TARGET_DISTRIBUTION: [f32; 33] = [
+    0.000000, 0.000000, 0.000000, 1.339844, 1.437500, 1.527344, 1.609375, 1.683594, 
+    1.750000, 1.808594, 1.859375, 1.902344, 1.937500, 1.964844, 1.984375, 1.996094, 
+    2.000000, 1.996094, 1.984375, 1.964844, 1.937500, 1.902344, 1.859375, 1.808594, 
+    1.750000, 1.683594, 1.609375, 1.527344, 1.437500, 1.339844, 1.234375, 1.121094, 
+    1.000000
+];
+
+/// Atomic counters for adaptive piece count distribution control
+struct PieceCountController {
+    /// Number of positions SEEN (before filtering) with each piece count
+    seen: [AtomicU64; 33],
+    /// Number of positions KEPT (after filtering) with each piece count
+    kept: [AtomicU64; 33],
+    /// Normalized target ratios (computed once at init)
+    target_ratios: [f32; 33],
+    /// Counter for debug printing
+    last_debug_print: AtomicU64,
+}
+
+impl PieceCountController {
+    fn new() -> Self {
+        // Normalize target distribution to sum to 1
+        let sum: f32 = TARGET_DISTRIBUTION.iter().sum();
+        let mut target_ratios = [0.0f32; 33];
+        for i in 0..33 {
+            target_ratios[i] = if sum > 0.0 { TARGET_DISTRIBUTION[i] / sum } else { 0.0 };
+        }
+
+        Self {
+            seen: std::array::from_fn(|_| AtomicU64::new(0)),
+            kept: std::array::from_fn(|_| AtomicU64::new(0)),
+            target_ratios,
+            last_debug_print: AtomicU64::new(0),
+        }
+    }
+
+    fn print_debug_stats(&self, total_seen: u64) {
+        let total_kept: u64 = self.kept.iter().map(|x| x.load(Ordering::Relaxed)).sum();
+
+        println!(
+            "\n======== Piece Count Distribution (seen: {}, kept: {}, ratio: {:.2}%) ========",
+            total_seen,
+            total_kept,
+            100.0 * total_kept as f64 / total_seen as f64
+        );
+        println!(
+            "{:>3} | {:>10} | {:>10} | {:>8} | {:>8} | {:>8}",
+            "PC", "Seen", "Kept", "Target%", "Actual%", "Error%"
+        );
+        println!("{:-<65}", "");
+
+        for pc in 2..=32 {
+            let seen = self.seen[pc].load(Ordering::Relaxed);
+            let kept = self.kept[pc].load(Ordering::Relaxed);
+            let target_pct = self.target_ratios[pc] * 100.0;
+            let actual_pct = if total_kept > 0 { 100.0 * kept as f64 / total_kept as f64 } else { 0.0 };
+            let error_pct = actual_pct - target_pct as f64;
+
+            if seen > 0 {
+                println!(
+                    "{:>3} | {:>10} | {:>10} | {:>7.3}% | {:>7.3}% | {:>+7.3}%",
+                    pc, seen, kept, target_pct, actual_pct, error_pct
+                );
+            }
+        }
+        println!();
+    }
+
+    fn should_keep(&self, piece_count: usize) -> bool {
+        let pc = piece_count.min(32);
+
+        // Record that we saw this piece count
+        let seen_this = self.seen[pc].fetch_add(1, Ordering::Relaxed) + 1;
+
+        let target_ratio = self.target_ratios[pc];
+
+        // If target is 0, always skip
+        if target_ratio == 0.0 {
+            return false;
+        }
+
+        // Need some samples before we start controlling
+        let total_seen: u64 = self.seen.iter().map(|x| x.load(Ordering::Relaxed)).sum();
+        if total_seen < 10000 {
+            self.kept[pc].fetch_add(1, Ordering::Relaxed);
+            return true;
+        }
+
+        // Debug printing
+        if DEBUG_DISTRIBUTION {
+            let last_print = self.last_debug_print.load(Ordering::Relaxed);
+            if total_seen >= last_print + DEBUG_PRINT_INTERVAL {
+                // Try to claim this print slot (avoid multiple threads printing)
+                if self
+                    .last_debug_print
+                    .compare_exchange(last_print, total_seen, Ordering::SeqCst, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    self.print_debug_stats(total_seen);
+                }
+            }
+        }
+
+        // Find the limiting factor: min over all categories of (seen[j] / target[j])
+        // This tells us the maximum "budget" we can achieve while maintaining ratios
+        // Only consider piece counts that have actually been observed (skip impossible ones)
+        let mut min_ratio = f64::MAX;
+        for j in 0..33 {
+            let seen_j = self.seen[j].load(Ordering::Relaxed) as f64;
+            if self.target_ratios[j] > 0.0 && seen_j > 0.0 {
+                let ratio = seen_j / (self.target_ratios[j] as f64);
+                if ratio < min_ratio {
+                    min_ratio = ratio;
+                }
+            }
+        }
+
+        // Ideal number to keep for this piece count = target[pc] * min_ratio
+        // keep_prob = ideal_kept / seen = target[pc] * min_ratio / seen[pc]
+        let keep_prob = (self.target_ratios[pc] as f64 * min_ratio / seen_this as f64).min(1.0);
+
+        let keep = fast_random() < keep_prob as f32;
+        if keep {
+            self.kept[pc].fetch_add(1, Ordering::Relaxed);
+        }
+        keep
+    }
+}
+
+static CONTROLLER: OnceLock<PieceCountController> = OnceLock::new();
+
+fn get_controller() -> &'static PieceCountController {
+    CONTROLLER.get_or_init(PieceCountController::new)
+}
+
+/// Simple thread-safe RNG for probabilistic filtering
+static RNG_STATE: AtomicU64 = AtomicU64::new(0xDEADBEEF12345678);
+
+fn fast_random() -> f32 {
+    // xorshift64 for speed
+    let mut state = RNG_STATE.load(Ordering::Relaxed);
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    RNG_STATE.store(state, Ordering::Relaxed);
+    (state as f32) / (u64::MAX as f32)
+}
+
+/// Custom filter that adaptively controls piece count distribution
+fn piece_count_filter(board: &Board) -> bool {
+    let piece_count = board.n_men() as usize;
+    get_controller().should_keep(piece_count)
+}
+
+fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move, _eval: i16, _wdl: f32) -> bool {
+    if board.is_tactical(mv) {
+        return false;
+    }
+    if board.in_check() {
+        return false;
+    }
+    if !piece_count_filter(board) {
+        return false;
+    }
+    true
+}
+
 macro_rules! net_id {
     () => {
-        "bullet_r108-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r111-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -131,11 +314,7 @@ fn main() {
         "..\\..\\chess\\data\\datagen3-22.viri",
         1024 * 32,
         4,
-        viribinpack::ViriFilter::Builtin(viriformat::dataformat::Filter {
-            min_ply: 0,
-            min_pieces: 0,
-            ..Default::default()
-        }),
+        viribinpack::ViriFilter::Custom(custom_filter_pipeline),
     );
 
     //trainer.load_from_checkpoint(...);
