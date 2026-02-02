@@ -188,11 +188,32 @@ fn piece_count_filter(board: &Board) -> bool {
     get_controller().should_keep(piece_count)
 }
 
-fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move, _eval: i16, _wdl: f32) -> bool {
+/// Eval scale used for sigmoid (same as eval_scale in training config)
+const EVAL_SCALE: f32 = 160.0;
+
+fn sigmoid(eval: f32) -> f32 {
+    1.0 / (1.0 + (-eval / EVAL_SCALE).exp())
+}
+
+/// WDL-eval disagreement filter: skip positions where eval disagrees with game result
+/// Positions are skipped with probability = abs(wdl - sigmoid(eval))
+fn wdl_eval_disagreement_filter(eval: i16, wdl: f32) -> bool {
+    let eval_wdl = sigmoid(eval as f32);
+    let disagreement = (wdl - eval_wdl).abs();
+
+    // Skip with probability equal to disagreement
+    // i.e., keep with probability = 1 - disagreement
+    fast_random() >= disagreement
+}
+
+fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move, eval: i16, wdl: f32) -> bool {
     if board.is_tactical(mv) {
         return false;
     }
     if board.in_check() {
+        return false;
+    }
+    if !wdl_eval_disagreement_filter(eval, wdl) {
         return false;
     }
     if !piece_count_filter(board) {
@@ -203,7 +224,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r111-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r112-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -297,7 +318,7 @@ fn main() {
     let num_superbatches = 1000;
     let schedule = TrainingSchedule {
         net_id: NET_ID.to_string(),
-        eval_scale: 160.0,
+        eval_scale: EVAL_SCALE,
         steps: TrainingSteps {
             batch_size: 16_384,
             batches_per_superbatch: 6104,
