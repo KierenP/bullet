@@ -7,7 +7,7 @@ use bullet_lib::{
         outputs::MaterialCount,
     },
     nn::{
-        InitSettings, Shape,
+        BackendMarker, InitSettings, NetworkBuilderNode, Shape,
         optimiser::{Ranger, RangerParams},
     },
     trainer::{
@@ -203,7 +203,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r111-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r113-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -213,7 +213,7 @@ fn main() {
     // network hyperparams
     let ft_size = 1536;
     let l1_size = 16;
-    let l2_size = 32;
+    let l2_size = 64;
     const NUM_OUTPUT_BUCKETS: usize = 8;
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
@@ -252,6 +252,10 @@ fn main() {
         .optimiser(Ranger)
         .save_format(&save_format)
         .build_custom(|builder, (stm, ntm, buckets), targets| {
+            fn hardswish6<'a>(x: NetworkBuilderNode<'a, BackendMarker>) -> NetworkBuilderNode<'a, BackendMarker> {
+                x * (x * (1.0 / 6.0) + 0.5).crelu()
+            }
+
             // input layer factoriser
             let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
             let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
@@ -263,7 +267,7 @@ fn main() {
             // layerstack weights
             let l1 = builder.new_affine("l1", ft_size, NUM_OUTPUT_BUCKETS * l1_size);
             let l2 = builder.new_affine("l2", l1_size * 2, NUM_OUTPUT_BUCKETS * l2_size);
-            let l3 = builder.new_affine("l3", l2_size, NUM_OUTPUT_BUCKETS);
+            let l3 = builder.new_affine("l3", l2_size / 2, NUM_OUTPUT_BUCKETS);
 
             // input layer inference
             let stm_subnet = l0.forward(stm).crelu().pairwise_mul();
@@ -273,7 +277,8 @@ fn main() {
             // layerstack inference
             out = l1.forward(out).select(buckets);
             out = out.concat(out.abs_pow(2.0)).crelu();
-            out = l2.forward(out).select(buckets).crelu();
+            out = l2.forward(out).select(buckets);
+            out = out.slice_rows(0, l2_size / 2) * hardswish6(out.slice_rows(l2_size / 2, l2_size));
             out = l3.forward(out).select(buckets);
 
             // squared error loss
