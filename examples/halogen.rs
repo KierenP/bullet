@@ -191,6 +191,10 @@ fn piece_count_filter(board: &Board) -> bool {
 /// Eval scale used for sigmoid (same as eval_scale in training config)
 const EVAL_SCALE: f32 = 160.0;
 
+/// Lasso regression coefficient for L1 layer activations
+/// Penalizes large activations with: coefficient * avg(|activations|)
+const L1_LASSO_COEFFICIENT: f32 = 0.005;
+
 fn sigmoid(eval: f32) -> f32 {
     1.0 / (1.0 + (-eval / EVAL_SCALE).exp())
 }
@@ -222,19 +226,13 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
     true
 }
 
-macro_rules! net_id {
-    () => {
-        "bullet_r112-768x8hm-1536-dp-pw-16-da-32-1x8"
-    };
-}
-
-const NET_ID: &str = net_id!();
+const NET_ID: &str = "bullet_r116-768x8hm-1536-dp-pw-16-da-32-1x8";
 
 fn main() {
     // network hyperparams
-    let ft_size = 1536;
-    let l1_size = 16;
-    let l2_size = 32;
+    const FT_SIZE: usize = 1536;
+    const L1_SIZE: usize = 16;
+    const L2_SIZE: usize = 32;
     const NUM_OUTPUT_BUCKETS: usize = 8;
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
@@ -274,22 +272,27 @@ fn main() {
         .save_format(&save_format)
         .build_custom(|builder, (stm, ntm, buckets), targets| {
             // input layer factoriser
-            let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
+            let l0f = builder.new_weights("l0f", Shape::new(FT_SIZE, 768), InitSettings::Zeroed);
             let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
 
             // input layer weights
-            let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, ft_size);
+            let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, FT_SIZE);
             l0.weights = l0.weights + expanded_factoriser;
 
             // layerstack weights
-            let l1 = builder.new_affine("l1", ft_size, NUM_OUTPUT_BUCKETS * l1_size);
-            let l2 = builder.new_affine("l2", l1_size * 2, NUM_OUTPUT_BUCKETS * l2_size);
-            let l3 = builder.new_affine("l3", l2_size, NUM_OUTPUT_BUCKETS);
+            let l1 = builder.new_affine("l1", FT_SIZE, NUM_OUTPUT_BUCKETS * L1_SIZE);
+            let l2 = builder.new_affine("l2", L1_SIZE * 2, NUM_OUTPUT_BUCKETS * L2_SIZE);
+            let l3 = builder.new_affine("l3", L2_SIZE, NUM_OUTPUT_BUCKETS);
 
             // input layer inference
             let stm_subnet = l0.forward(stm).crelu().pairwise_mul();
             let ntm_subnet = l0.forward(ntm).crelu().pairwise_mul();
             let mut out = stm_subnet.concat(ntm_subnet);
+
+            // lasso regularization to encourage sparsity
+            // sum across features using matmul with ones, then average across batch
+            let ones = builder.new_constant(Shape::new(1, FT_SIZE), &[1.0; FT_SIZE]);
+            let l0_lasso = ones.matmul(out) * (L1_LASSO_COEFFICIENT / FT_SIZE as f32);
 
             // layerstack inference
             out = l1.forward(out).select(buckets);
@@ -297,8 +300,8 @@ fn main() {
             out = l2.forward(out).select(buckets).crelu();
             out = l3.forward(out).select(buckets);
 
-            // squared error loss
-            let loss = out.sigmoid().squared_error(targets);
+            // squared error loss + regularization
+            let loss = out.sigmoid().squared_error(targets) + l0_lasso;
             (out, loss)
         });
 
