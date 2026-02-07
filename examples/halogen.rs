@@ -226,7 +226,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
     true
 }
 
-const NET_ID: &str = "bullet_r116-768x8hm-1536-dp-pw-16-da-32-1x8";
+const NET_ID: &str = "bullet_r117-768x8hm-1536-dp-pw-16-da-32-1x8";
 
 fn main() {
     // network hyperparams
@@ -247,11 +247,13 @@ fn main() {
     ];
     const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
 
+    const FT_CLIP: f32 = 1.98;
+
     let save_format = [
         SavedFormat::id("l0w")
             .transform(|store, weights| {
                 let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
-                weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
+                weights.into_iter().zip(factoriser).map(|(a, b)| (a + b).clamp(-FT_CLIP, FT_CLIP)).collect()
             })
             .quantise::<i16>(255)
             .round(),
@@ -277,7 +279,7 @@ fn main() {
 
             // input layer weights
             let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, FT_SIZE);
-            l0.weights = l0.weights + expanded_factoriser;
+            l0.weights = (l0.weights + expanded_factoriser).clip_pass_through_grad(-FT_CLIP, FT_CLIP);
 
             // layerstack weights
             let l1 = builder.new_affine("l1", FT_SIZE, NUM_OUTPUT_BUCKETS * L1_SIZE);
@@ -305,8 +307,8 @@ fn main() {
             (out, loss)
         });
 
-    // cap l1 weights to 1.98 after factoriser is applied
-    let l0_params = RangerParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
+    // Ensure the weights + factoriser stay sane, we use clip_pass_through_grad so the optimizer is aware of the clipping and can maximise the headroom effectively
+    let l0_params = RangerParams { max_weight: FT_CLIP * 2.0, min_weight: -FT_CLIP * 2.0, ..Default::default() };
 
     // allow float weights to have a large range
     let float_params = RangerParams { max_weight: 128.0, min_weight: -128.0, ..Default::default() };
