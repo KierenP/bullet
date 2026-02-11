@@ -224,7 +224,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r112-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r119-768x8hm-1536-dp-pw-16-da-32-1x8"
     };
 }
 
@@ -315,7 +315,7 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l3w", float_params);
     trainer.optimiser.set_params_for_weight("l3b", float_params);
 
-    let num_superbatches = 1000;
+    let num_superbatches = 100;
     let schedule = TrainingSchedule {
         net_id: NET_ID.to_string(),
         eval_scale: EVAL_SCALE,
@@ -325,8 +325,8 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: num_superbatches,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
-        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: num_superbatches },
+        wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
+        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.00001, final_lr: 0.0, final_superbatch: num_superbatches },
         save_rate: 100,
     };
 
@@ -338,7 +338,7 @@ fn main() {
         viribinpack::ViriFilter::Custom(custom_filter_pipeline),
     );
 
-    //trainer.load_from_checkpoint(...);
+    trainer.load_from_checkpoint("checkpoints/bullet_r112-768x8hm-1536-dp-pw-16-da-32-1x8-1000");
     trainer.run(&schedule, &settings, &data_loader);
 
     for fen in [
