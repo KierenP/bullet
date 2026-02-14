@@ -3,13 +3,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bullet_lib::{
     game::{
-        inputs::{ChessBucketsMirrored, get_num_buckets},
+        formats::bulletformat::ChessBoard,
+        inputs::{SparseInputType, get_num_buckets},
         outputs::MaterialCount,
     },
-    nn::{
-        InitSettings, Shape,
-        optimiser::{Ranger, RangerParams},
-    },
+    nn::optimiser::{Ranger, RangerParams},
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -21,6 +19,485 @@ use bullet_lib::{
     },
 };
 
+//----------------------------------
+// Threat Inputs Implementation
+//----------------------------------
+
+/// Threat inputs specification:
+///
+/// In a normal king-bucket NNUE, each input is a (piece, square, king-bucket) tuple. For threat inputs, we keep the
+/// (piece, square, king-bucket) inputs but add an additional set of inputs which are (piece, square, threat-piece,
+/// threat-square). I.e 'white bishop on c4 is attacking black knight on f7' would activate the input corresponding to
+/// (white bishop, c4, black knight, f7).
+///
+/// This would result in a very large number of inputs (12 pieces * 64 squares * 64 threat-squares * 12 threat-pieces
+/// = 589,824) which is too large to be practical. To reduce this, we can observe that not all threat inputs are
+/// possible. Depending on the piece and square, only certain target squares can be attacked. For example, a knight on
+/// c4 can only attack 8 squares, so it can only activate 8*12=96 threat inputs, not 64*12=768.
+///
+/// We further reduce the input count by restricting which piece types can threaten which:
+/// - Pawn only threatens pawns, knights, and rooks (6 victims)
+/// - Knight threatens everyone (12 victims)
+/// - Bishop/rook don't threaten queens; queen→bishop/rook is kept instead (10 victims)
+/// - Queen threatens everyone (12 victims)
+/// - King only threatens pawns, knights, bishops, and rooks (8 victims)
+///
+/// Both directions of each threat are kept as separate features (A→B and B→A are distinct).
+///
+/// - pawn:   84 attacks * 6 victims = 504
+/// - knight: 336 attacks * 12 victims = 4,032
+/// - bishop: 560 attacks * 10 victims = 5,600
+/// - rook:   896 attacks * 10 victims = 8,960
+/// - queen:  1456 attacks * 12 victims = 17,472
+/// - king:   420 attacks * 8 victims  = 3,360
+/// - TOTAL: (504 + 4032 + 5600 + 8960 + 17472 + 3360) * 2 attacker sides = 79,856 threat inputs
+///
+/// For speed and simplicity, we precompute lookup tables for each (piece, square) with the offset into the threat
+/// input list. That way we can enumerate the attack mask and efficiently activate the relevant threat inputs without
+/// needing to do any complex calculations at runtime.
+///
+/// In addition to the threat inputs, we add 768 (piece, square) inputs along with the usual (piece, square, king-bucket) inputs.
+
+// ============================================================
+// Attack generation (self-contained magic bitboards)
+// ============================================================
+
+/// Piece types in ChessBoard encoding: bits 0-2
+const PAWN: u8 = 0;
+const KNIGHT: u8 = 1;
+const BISHOP: u8 = 2;
+const ROOK: u8 = 3;
+const QUEEN: u8 = 4;
+const KING: u8 = 5;
+
+/// Precomputed knight attack bitboards for each square
+const fn compute_knight_attacks() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let r = (sq / 8) as i32;
+        let f = (sq % 8) as i32;
+        let deltas: [(i32, i32); 8] = [
+            (2, 1), (2, -1), (-2, 1), (-2, -1),
+            (1, 2), (1, -2), (-1, 2), (-1, -2),
+        ];
+        let mut bb = 0u64;
+        let mut i = 0;
+        while i < 8 {
+            let nr = r + deltas[i].0;
+            let nf = f + deltas[i].1;
+            if nr >= 0 && nr < 8 && nf >= 0 && nf < 8 {
+                bb |= 1u64 << (nr * 8 + nf);
+            }
+            i += 1;
+        }
+        table[sq] = bb;
+        sq += 1;
+    }
+    table
+}
+
+/// Precomputed king attack bitboards for each square
+const fn compute_king_attacks() -> [u64; 64] {
+    let mut table = [0u64; 64];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let r = (sq / 8) as i32;
+        let f = (sq % 8) as i32;
+        let deltas: [(i32, i32); 8] = [
+            (1, 0), (-1, 0), (0, 1), (0, -1),
+            (1, 1), (1, -1), (-1, 1), (-1, -1),
+        ];
+        let mut bb = 0u64;
+        let mut i = 0;
+        while i < 8 {
+            let nr = r + deltas[i].0;
+            let nf = f + deltas[i].1;
+            if nr >= 0 && nr < 8 && nf >= 0 && nf < 8 {
+                bb |= 1u64 << (nr * 8 + nf);
+            }
+            i += 1;
+        }
+        table[sq] = bb;
+        sq += 1;
+    }
+    table
+}
+
+/// Precomputed pawn attack bitboards for each square, per side (0=STM, 1=NSTM)
+/// STM pawns attack "forward" (higher ranks), NSTM pawns attack "backward" (lower ranks)
+/// In ChessBoard, STM's perspective: rank 0 = back rank, rank 7 = opponent's back rank
+const fn compute_pawn_attacks() -> [[u64; 64]; 2] {
+    let mut table = [[0u64; 64]; 2];
+    let mut sq = 0usize;
+    while sq < 64 {
+        let r = (sq / 8) as i32;
+        let f = (sq % 8) as i32;
+        // STM pawn attacks upward (rank + 1)
+        if r + 1 < 8 {
+            if f - 1 >= 0 {
+                table[0][sq] |= 1u64 << ((r + 1) * 8 + (f - 1));
+            }
+            if f + 1 < 8 {
+                table[0][sq] |= 1u64 << ((r + 1) * 8 + (f + 1));
+            }
+        }
+        // NSTM pawn attacks downward (rank - 1)
+        if r - 1 >= 0 {
+            if f - 1 >= 0 {
+                table[1][sq] |= 1u64 << ((r - 1) * 8 + (f - 1));
+            }
+            if f + 1 < 8 {
+                table[1][sq] |= 1u64 << ((r - 1) * 8 + (f + 1));
+            }
+        }
+        sq += 1;
+    }
+    table
+}
+
+static KNIGHT_ATTACKS: [u64; 64] = compute_knight_attacks();
+static KING_ATTACKS: [u64; 64] = compute_king_attacks();
+static PAWN_ATTACKS: [[u64; 64]; 2] = compute_pawn_attacks();
+
+/// Classical sliding attack generation using ray scanning with blockers
+fn bishop_attacks(sq: usize, occ: u64) -> u64 {
+    let mut attacks = 0u64;
+    let directions: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+    for &(dr, df) in &directions {
+        let mut r = (sq / 8) as i32 + dr;
+        let mut f = (sq % 8) as i32 + df;
+        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+            let s = (r * 8 + f) as usize;
+            attacks |= 1u64 << s;
+            if occ & (1u64 << s) != 0 {
+                break;
+            }
+            r += dr;
+            f += df;
+        }
+    }
+    attacks
+}
+
+fn rook_attacks(sq: usize, occ: u64) -> u64 {
+    let mut attacks = 0u64;
+    let directions: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    for &(dr, df) in &directions {
+        let mut r = (sq / 8) as i32 + dr;
+        let mut f = (sq % 8) as i32 + df;
+        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+            let s = (r * 8 + f) as usize;
+            attacks |= 1u64 << s;
+            if occ & (1u64 << s) != 0 {
+                break;
+            }
+            r += dr;
+            f += df;
+        }
+    }
+    attacks
+}
+
+fn queen_attacks(sq: usize, occ: u64) -> u64 {
+    bishop_attacks(sq, occ) | rook_attacks(sq, occ)
+}
+
+/// Get attack bitboard for a given piece type on a given square.
+/// `side` is 0 for STM, 1 for NSTM (only matters for pawns).
+fn attacks_for(piece_type: u8, sq: usize, side: usize, occ: u64) -> u64 {
+    match piece_type {
+        PAWN => PAWN_ATTACKS[side][sq],
+        KNIGHT => KNIGHT_ATTACKS[sq],
+        BISHOP => bishop_attacks(sq, occ),
+        ROOK => rook_attacks(sq, occ),
+        QUEEN => queen_attacks(sq, occ),
+        KING => KING_ATTACKS[sq],
+        _ => 0,
+    }
+}
+
+// ============================================================
+// Threat table construction
+// ============================================================
+
+/// Check if an attacker piece type is allowed to threaten a victim piece type.
+fn can_threaten(atk_piece: u8, vic_piece: u8) -> bool {
+    match atk_piece {
+        PAWN => matches!(vic_piece, PAWN | KNIGHT | ROOK),
+        BISHOP | ROOK => vic_piece != QUEEN,
+        KING => matches!(vic_piece, PAWN | KNIGHT | BISHOP | ROOK),
+        _ => true,
+    }
+}
+
+/// Precomputed lookup table mapping (attacker, square, victim, square) -> feature index.
+struct ThreatTables {
+    /// Total number of threat features (per perspective).
+    total_threat_features: usize,
+
+    /// Direct lookup: [atk_idx][atk_sq][vic_idx][vic_sq] -> feature index.
+    /// atk_idx = piece_type * 2 + side, vic_idx = piece_type * 2 + side.
+    /// u32::MAX = invalid/excluded/deduped threat.
+    lookup: Box<[[[[u32; 64]; 12]; 64]; 12]>,
+}
+
+impl ThreatTables {
+    fn new() -> Self {
+        let mut lookup = Box::new([[[[u32::MAX; 64]; 12]; 64]; 12]);
+
+        let mut current_offset: u32 = 0;
+
+        for atk_piece in 0u8..6 {
+            for atk_side in 0..2usize {
+                let atk_idx = atk_piece as usize * 2 + atk_side;
+
+                for atk_sq in 0..64usize {
+                    // Pawns can't be on rank 0 (back rank) or rank 7 (promotion rank)
+                    if atk_piece == PAWN && (atk_sq / 8 == 0 || atk_sq / 8 == 7) {
+                        continue;
+                    }
+
+                    let attack_bb = attacks_for(atk_piece, atk_sq, atk_side, 0);
+                    if attack_bb == 0 {
+                        continue;
+                    }
+
+                    for vic_piece in 0u8..6 {
+                        for vic_side in 0..2usize {
+                            let vic_idx = vic_piece as usize * 2 + vic_side;
+
+                            if !can_threaten(atk_piece, vic_piece) {
+                                continue;
+                            }
+
+                            let mut bb = attack_bb;
+                            while bb != 0 {
+                                let target_sq = bb.trailing_zeros() as usize;
+                                bb &= bb - 1;
+
+                                lookup[atk_idx][atk_sq][vic_idx][target_sq] = current_offset;
+                                current_offset += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let total_threat_features = current_offset as usize;
+
+        assert_eq!(
+            total_threat_features, 79856,
+            "Threat table size mismatch! Expected 79856, got {total_threat_features}",
+        );
+
+        Self {
+            total_threat_features,
+            lookup,
+        }
+    }
+
+    /// Get the threat feature index for an attacker threatening a victim.
+    /// Returns None if this threat is not tracked (duplicate or excluded).
+    #[inline]
+    fn threat_feature(
+        &self,
+        atk_piece: u8,
+        atk_side: usize,
+        atk_sq: usize,
+        vic_piece: u8,
+        vic_side: usize,
+        vic_sq: usize,
+    ) -> Option<usize> {
+        let atk_idx = atk_piece as usize * 2 + atk_side;
+        let vic_idx = vic_piece as usize * 2 + vic_side;
+
+        let idx = self.lookup[atk_idx][atk_sq][vic_idx][vic_sq];
+        if idx == u32::MAX {
+            return None;
+        }
+
+        Some(idx as usize)
+    }
+}
+
+static THREAT_TABLES: OnceLock<ThreatTables> = OnceLock::new();
+
+fn get_threat_tables() -> &'static ThreatTables {
+    THREAT_TABLES.get_or_init(ThreatTables::new)
+}
+
+// ============================================================
+// ChessBucketsMirroredWithThreats - drop-in replacement
+// ============================================================
+
+/// A drop-in replacement for `ChessBucketsMirrored` that adds threat inputs.
+///
+/// Every piece always activates a king-bucketed (piece, square) feature
+/// and an unbucketed (piece, square) feature. Pieces with active threats
+/// additionally activate threat features.
+///
+/// Feature layout:
+///   [0, 768 * num_buckets)               : king-bucketed piece-square
+///   [768 * num_buckets, +768)             : unbucketed piece-square (always active)
+///   [768 * num_buckets + 768, ...)        : threat features
+#[derive(Clone)]
+struct ChessBucketsMirroredWithThreats {
+    buckets: [usize; 64],
+    num_buckets: usize,
+    /// Base offset for unbucketed piece-square features (= 768 * num_buckets)
+    psqt_base: usize,
+    /// Base offset for threat features (= 768 * num_buckets + 768)
+    threat_base: usize,
+    /// Total number of inputs
+    total_inputs: usize,
+}
+
+impl ChessBucketsMirroredWithThreats {
+    fn new(buckets: [usize; 32]) -> Self {
+        let num_buckets = get_num_buckets(&buckets);
+
+        let mut expanded = [0; 64];
+        for (idx, elem) in expanded.iter_mut().enumerate() {
+            *elem = buckets[(idx / 8) * 4 + [0, 1, 2, 3, 3, 2, 1, 0][idx % 8]];
+        }
+
+        let tables = get_threat_tables();
+        let psqt_base = 768 * num_buckets;
+        let threat_base = psqt_base + 768;
+        let total_inputs = threat_base + tables.total_threat_features;
+
+        Self {
+            buckets: expanded,
+            num_buckets,
+            psqt_base,
+            threat_base,
+            total_inputs,
+        }
+    }
+}
+
+/// Extract piece list from a ChessBoard's packed representation.
+/// Returns array of (piece_nibble, square) pairs and the count.
+#[inline]
+fn extract_pieces(pos: &ChessBoard) -> ([(u8, usize); 32], usize) {
+    let mut result = [(0u8, 0usize); 32];
+    let mut count = 0;
+    let mut occ = pos.occ();
+    while occ != 0 {
+        let sq = occ.trailing_zeros() as usize;
+        occ &= occ - 1;
+        let piece = (pos.pcs[count / 2] >> (4 * (count & 1))) & 0b1111;
+        result[count] = (piece, sq);
+        count += 1;
+    }
+    (result, count)
+}
+
+impl SparseInputType for ChessBucketsMirroredWithThreats {
+    type RequiredDataType = ChessBoard;
+
+    fn num_inputs(&self) -> usize {
+        self.total_inputs
+    }
+
+    fn max_active(&self) -> usize {
+        // 32 king-bucketed + 32 unbucketed + threat features per piece
+        512
+    }
+
+    fn map_features<F: FnMut(usize, usize)>(&self, pos: &Self::RequiredDataType, mut f: F) {
+        let tables = get_threat_tables();
+
+        // Determine king-side flips and bucket offsets (same as ChessBucketsMirrored)
+        let our_ksq = pos.our_ksq() as usize;
+        let opp_ksq = pos.opp_ksq() as usize;
+        let stm_flip = if our_ksq % 8 > 3 { 7 } else { 0 };
+        let ntm_flip = if opp_ksq % 8 > 3 { 7 } else { 0 };
+        let stm_bucket = 768 * self.buckets[our_ksq];
+        let ntm_bucket = 768 * self.buckets[opp_ksq];
+
+        // Extract piece data
+        let (pieces, count) = extract_pieces(pos);
+        let occ = pos.occ();
+
+        // Build a per-square lookup: piece_on[sq] = piece_nibble (0xFF = empty)
+        let mut piece_on = [0xFFu8; 64];
+        for i in 0..count {
+            let (piece, sq) = pieces[i];
+            piece_on[sq] = piece;
+        }
+
+        // For each piece, emit king-bucketed features and compute threats
+        for i in 0..count {
+            let (piece, sq) = pieces[i];
+            let c = ((piece >> 3) & 1) as usize; // 0=STM, 1=NSTM
+            let pc = 64 * (piece & 7) as usize;
+
+            // King-bucketed feature (same as ChessBucketsMirrored)
+            let stm_feat = [0, 384][c] + pc + sq;
+            let ntm_feat = [384, 0][c] + pc + (sq ^ 56);
+            f(stm_bucket + (stm_feat ^ stm_flip), ntm_bucket + (ntm_feat ^ ntm_flip));
+
+            // Compute attack set for this piece
+            let piece_type = piece & 7;
+            let attack_bb = attacks_for(piece_type, sq, c, occ);
+
+            // Unbucketed piece-square feature (always active)
+            let stm_psqt = self.psqt_base + [0, 384][c] + pc + sq;
+            let ntm_psqt = self.psqt_base + [384, 0][c] + pc + (sq ^ 56);
+            f(stm_psqt, ntm_psqt);
+
+            // Find all pieces this piece attacks and emit threat features
+            let attacked_pieces = attack_bb & occ;
+            if attacked_pieces != 0 {
+                let mut att = attacked_pieces;
+                while att != 0 {
+                    let target_sq = att.trailing_zeros() as usize;
+                    att &= att - 1;
+
+                    let vic_nibble = piece_on[target_sq];
+                    if vic_nibble == 0xFF {
+                        continue;
+                    }
+
+                    let vic_pt = vic_nibble & 7;
+                    let vic_side = ((vic_nibble >> 3) & 1) as usize;
+
+                    // Look up threat feature for both perspectives.
+                    let stm_idx = match tables.threat_feature(
+                        piece_type, c, sq, vic_pt, vic_side, target_sq,
+                    ) {
+                        Some(idx) => idx,
+                        None => continue, // not a tracked threat (can_threaten restriction)
+                    };
+
+                    // NTM perspective: flip sides and mirror vertically
+                    let ntm_idx = match tables.threat_feature(
+                        piece_type, c ^ 1, sq ^ 56, vic_pt, vic_side ^ 1, target_sq ^ 56,
+                    ) {
+                        Some(idx) => idx,
+                        None => continue,
+                    };
+
+                    f(self.threat_base + stm_idx, self.threat_base + ntm_idx);
+                }
+            }
+        }
+    }
+
+    fn shorthand(&self) -> String {
+        let tables = get_threat_tables();
+        format!("768x{}hm+768+{}t", self.num_buckets, tables.total_threat_features)
+    }
+
+    fn description(&self) -> String {
+        "Horizontally mirrored, king bucketed psqt chess inputs with threat inputs".to_string()
+    }
+}
+
+//----------------------------------
 use viriformat::chess::board::Board;
 
 /// Enable debug printing of piece count distribution statistics
@@ -224,7 +701,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r112-768x8hm-1536-dp-pw-16-da-32-1x8"
+        "bullet_r123"
     };
 }
 
@@ -232,7 +709,7 @@ const NET_ID: &str = net_id!();
 
 fn main() {
     // network hyperparams
-    let ft_size = 1536;
+    let ft_size = 512;
     let l1_size = 16;
     let l2_size = 32;
     const NUM_OUTPUT_BUCKETS: usize = 8;
@@ -247,16 +724,12 @@ fn main() {
         7, 7, 7, 7,
         7, 7, 7, 7,
     ];
-    const NUM_INPUT_BUCKETS: usize = get_num_buckets(&BUCKET_LAYOUT);
+
+    let threat_inputs = ChessBucketsMirroredWithThreats::new(BUCKET_LAYOUT);
+    let num_inputs = threat_inputs.num_inputs();
 
     let save_format = [
-        SavedFormat::id("l0w")
-            .transform(|store, weights| {
-                let factoriser = store.get("l0f").values.repeat(NUM_INPUT_BUCKETS);
-                weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
-            })
-            .quantise::<i16>(255)
-            .round(),
+        SavedFormat::id("l0w").quantise::<i16>(255).round(),
         SavedFormat::id("l0b").quantise::<i16>(255).round(),
         SavedFormat::id("l1w").quantise::<i16>(64).transpose().round(),
         SavedFormat::id("l1b").quantise::<i16>(64 * 255).round(),
@@ -268,18 +741,13 @@ fn main() {
 
     let mut trainer = ValueTrainerBuilder::default()
         .dual_perspective()
-        .inputs(ChessBucketsMirrored::new(BUCKET_LAYOUT))
+        .inputs(threat_inputs)
         .output_buckets(MaterialCount::<8>)
         .optimiser(Ranger)
         .save_format(&save_format)
         .build_custom(|builder, (stm, ntm, buckets), targets| {
-            // input layer factoriser
-            let l0f = builder.new_weights("l0f", Shape::new(ft_size, 768), InitSettings::Zeroed);
-            let expanded_factoriser = l0f.repeat(NUM_INPUT_BUCKETS);
-
             // input layer weights
-            let mut l0 = builder.new_affine("l0", 768 * NUM_INPUT_BUCKETS, ft_size);
-            l0.weights = l0.weights + expanded_factoriser;
+            let l0 = builder.new_affine("l0", num_inputs, ft_size);
 
             // layerstack weights
             let l1 = builder.new_affine("l1", ft_size, NUM_OUTPUT_BUCKETS * l1_size);
@@ -302,20 +770,15 @@ fn main() {
             (out, loss)
         });
 
-    // cap l1 weights to 1.98 after factoriser is applied
-    let l0_params = RangerParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
-
     // allow float weights to have a large range
     let float_params = RangerParams { max_weight: 128.0, min_weight: -128.0, ..Default::default() };
 
-    trainer.optimiser.set_params_for_weight("l0w", l0_params);
-    trainer.optimiser.set_params_for_weight("l0f", l0_params);
     trainer.optimiser.set_params_for_weight("l2w", float_params);
     trainer.optimiser.set_params_for_weight("l2b", float_params);
     trainer.optimiser.set_params_for_weight("l3w", float_params);
     trainer.optimiser.set_params_for_weight("l3b", float_params);
 
-    let num_superbatches = 1000;
+    let num_superbatches = 100;
     let schedule = TrainingSchedule {
         net_id: NET_ID.to_string(),
         eval_scale: EVAL_SCALE,
