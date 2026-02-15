@@ -35,14 +35,13 @@ use bullet_lib::{
 /// possible. Depending on the piece and square, only certain target squares can be attacked. For example, a knight on
 /// c4 can only attack 8 squares, so it can only activate 8*12=96 threat inputs, not 64*12=768.
 ///
-/// We further reduce the input count by restricting which piece types can threaten which:
+/// We further reduce the input count by restricting which piece types can threaten which, because some threats are 
+/// symmetric. E.g rook -> queen implies queen -> rook.
 /// - Pawn only threatens pawns, knights, and rooks (6 victims)
 /// - Knight threatens everyone (12 victims)
-/// - Bishop/rook don't threaten queens; queen→bishop/rook is kept instead (10 victims)
+/// - Bishop/rook don't threaten queens (10 victims)
 /// - Queen threatens everyone (12 victims)
 /// - King only threatens pawns, knights, bishops, and rooks (8 victims)
-///
-/// Both directions of each threat are kept as separate features (A→B and B→A are distinct).
 ///
 /// - pawn:   84 attacks * 6 victims = 504
 /// - knight: 336 attacks * 12 victims = 4,032
@@ -59,7 +58,7 @@ use bullet_lib::{
 /// In addition to the threat inputs, we add 768 (piece, square) inputs along with the usual (piece, square, king-bucket) inputs.
 
 // ============================================================
-// Attack generation (self-contained magic bitboards)
+// Attack generation
 // ============================================================
 
 /// Piece types in ChessBoard encoding: bits 0-2
@@ -329,11 +328,9 @@ fn get_threat_tables() -> &'static ThreatTables {
 }
 
 // ============================================================
-// ChessBucketsMirroredWithThreats - drop-in replacement
+// ChessBucketsMirroredWithThreats
 // ============================================================
 
-/// A drop-in replacement for `ChessBucketsMirrored` that adds threat inputs.
-///
 /// Every piece always activates a king-bucketed (piece, square) feature
 /// and an unbucketed (piece, square) feature. Pieces with active threats
 /// additionally activate threat features.
@@ -778,18 +775,33 @@ fn main() {
     trainer.optimiser.set_params_for_weight("l3w", float_params);
     trainer.optimiser.set_params_for_weight("l3b", float_params);
 
-    let num_superbatches = 100;
-    let schedule = TrainingSchedule {
-        net_id: NET_ID.to_string(),
+    let stage_1_num_superbatches = 900;
+    let stage_1_schedule = TrainingSchedule {
+        net_id: format!("{NET_ID}-stage1"),
         eval_scale: EVAL_SCALE,
         steps: TrainingSteps {
             batch_size: 16_384,
             batches_per_superbatch: 6104,
             start_superbatch: 1,
-            end_superbatch: num_superbatches,
+            end_superbatch: stage_1_num_superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
-        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: num_superbatches },
+        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: stage_1_num_superbatches },
+        save_rate: 100,
+    };
+
+    let stage_2_num_superbatches = 100;
+    let stage_2_schedule = TrainingSchedule {
+        net_id: format!("{NET_ID}-stage2"),
+        eval_scale: EVAL_SCALE,
+        steps: TrainingSteps {
+            batch_size: 16_384,
+            batches_per_superbatch: 6104,
+            start_superbatch: 1,
+            end_superbatch: stage_2_num_superbatches,
+        },
+        wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
+        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.00001, final_lr: 0.0, final_superbatch: stage_2_num_superbatches },
         save_rate: 100,
     };
 
@@ -801,8 +813,8 @@ fn main() {
         viribinpack::ViriFilter::Custom(custom_filter_pipeline),
     );
 
-    //trainer.load_from_checkpoint(...);
-    trainer.run(&schedule, &settings, &data_loader);
+    trainer.run(&stage_1_schedule, &settings, &data_loader);
+    trainer.run(&stage_2_schedule, &settings, &data_loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -817,5 +829,5 @@ fn main() {
         println!("EVAL: {}", 160.0 * eval);
     }
 
-    trainer.save_quantised(&format!("nets/{NET_ID}-e{num_superbatches}.nn")).unwrap();
+    trainer.save_quantised(&format!("nets/{NET_ID}.nn")).unwrap();
 }
