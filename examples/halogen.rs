@@ -698,7 +698,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r123"
+        "bullet_r125"
     };
 }
 
@@ -725,8 +725,20 @@ fn main() {
     let threat_inputs = ChessBucketsMirroredWithThreats::new(BUCKET_LAYOUT);
     let num_inputs = threat_inputs.num_inputs();
 
+    // l0w split: PSQ features (king-bucketed + unbucketed) as i16/255, threat features as i8/64
+    let psq_count = (768 * threat_inputs.num_buckets + 768) * ft_size;
     let save_format = [
-        SavedFormat::id("l0w").quantise::<i16>(255).round(),
+        SavedFormat::id("l0w")
+            .transform(move |_, values| values[..psq_count].to_vec())
+            .quantise::<i16>(255)
+            .round(),
+        SavedFormat::id("l0w")
+            .transform(move |_, values| {
+                let max = 127.0 / 255.0;
+                values[psq_count..].iter().map(|&v| v.clamp(-max, max)).collect()
+            })
+            .quantise::<i8>(255)
+            .round(),
         SavedFormat::id("l0b").quantise::<i16>(255).round(),
         SavedFormat::id("l1w").quantise::<i16>(64).transpose().round(),
         SavedFormat::id("l1b").quantise::<i16>(64 * 255).round(),
@@ -813,8 +825,9 @@ fn main() {
         viribinpack::ViriFilter::Custom(custom_filter_pipeline),
     );
 
-    trainer.run(&stage_1_schedule, &settings, &data_loader);
-    trainer.run(&stage_2_schedule, &settings, &data_loader);
+    trainer.load_from_checkpoint("checkpoints/bullet_r124-stage2-100");
+    // trainer.run(&stage_1_schedule, &settings, &data_loader);
+    // trainer.run(&stage_2_schedule, &settings, &data_loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
