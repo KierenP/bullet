@@ -55,7 +55,7 @@ use bullet_lib::{
 /// input list. That way we can enumerate the attack mask and efficiently activate the relevant threat inputs without
 /// needing to do any complex calculations at runtime.
 ///
-/// In addition to the threat inputs, we add 768 (piece, square) inputs along with the usual (piece, square, king-bucket) inputs.
+/// The threat inputs are added alongside the usual (piece, square, king-bucket) inputs.
 
 // ============================================================
 // Attack generation
@@ -331,20 +331,19 @@ fn get_threat_tables() -> &'static ThreatTables {
 // ChessBucketsMirroredWithThreats
 // ============================================================
 
-/// Every piece always activates a king-bucketed (piece, square) feature
-/// and an unbucketed (piece, square) feature. Pieces with active threats
-/// additionally activate threat features.
+/// Every piece always activates a king-bucketed (piece, square) feature.
+/// Pieces with active threats additionally activate threat features.
 ///
 /// Feature layout:
 ///   [0, 768 * num_buckets)               : king-bucketed piece-square
-///   [768 * num_buckets, +768)             : unbucketed piece-square (always active)
-///   [768 * num_buckets + 768, ...)        : threat features
+///   [768 * num_buckets, +768)            : manual factorizer for king-bucketed portion (see below)
+///   [768 * num_buckets, ...)             : threat features
 #[derive(Clone)]
 struct ChessBucketsMirroredWithThreats {
     buckets: [usize; 64],
     num_buckets: usize,
     /// Base offset for unbucketed piece-square features (= 768 * num_buckets)
-    psqt_base: usize,
+    factorizer_base: usize,
     /// Base offset for threat features (= 768 * num_buckets + 768)
     threat_base: usize,
     /// Total number of inputs
@@ -361,14 +360,14 @@ impl ChessBucketsMirroredWithThreats {
         }
 
         let tables = get_threat_tables();
-        let psqt_base = 768 * num_buckets;
-        let threat_base = psqt_base + 768;
+        let factorizer_base = 768 * num_buckets;
+        let threat_base = factorizer_base + 768;
         let total_inputs = threat_base + tables.total_threat_features;
 
         Self {
             buckets: expanded,
             num_buckets,
-            psqt_base,
+            factorizer_base,
             threat_base,
             total_inputs,
         }
@@ -442,9 +441,9 @@ impl SparseInputType for ChessBucketsMirroredWithThreats {
             let attack_bb = attacks_for(piece_type, sq, c, occ);
 
             // Unbucketed piece-square feature (always active)
-            let stm_psqt = self.psqt_base + [0, 384][c] + pc + sq;
-            let ntm_psqt = self.psqt_base + [384, 0][c] + pc + (sq ^ 56);
-            f(stm_psqt, ntm_psqt);
+            let stm_factorizer = self.factorizer_base + [0, 384][c] + pc + sq;
+            let ntm_factorizer = self.factorizer_base + [384, 0][c] + pc + (sq ^ 56);
+            f(stm_factorizer, ntm_factorizer);
 
             // Find all pieces this piece attacks and emit threat features
             let attacked_pieces = attack_bb & occ;
@@ -698,7 +697,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r125"
+        "bullet_r126"
     };
 }
 
@@ -726,16 +725,21 @@ fn main() {
     let num_inputs = threat_inputs.num_inputs();
 
     // l0w split: PSQ features (king-bucketed + unbucketed) as i16/255, threat features as i8/64
-    let psq_count = (768 * threat_inputs.num_buckets + 768) * ft_size;
+    let factoriser_offset = threat_inputs.factorizer_base * ft_size;
+    let threats_offset = threat_inputs.threat_base * ft_size;
     let save_format = [
         SavedFormat::id("l0w")
-            .transform(move |_, values| values[..psq_count].to_vec())
+            .transform(move |_, values| {
+                let king_piece_square = &values[..factoriser_offset];
+                let factoriser = &values[factoriser_offset..threats_offset];
+                factoriser.repeat(threat_inputs.num_buckets).iter().zip(king_piece_square.iter()).map(|(a, b)| a + b).collect()
+            })
             .quantise::<i16>(255)
             .round(),
         SavedFormat::id("l0w")
             .transform(move |_, values| {
                 let max = 127.0 / 255.0;
-                values[psq_count..].iter().map(|&v| v.clamp(-max, max)).collect()
+                values[threats_offset..].iter().map(|&v| v.clamp(-max, max)).collect()
             })
             .quantise::<i8>(255)
             .round(),
@@ -779,9 +783,13 @@ fn main() {
             (out, loss)
         });
 
+    // cap l0 weights to 1.98 after factoriser is applied
+    let l0_params = RangerParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
+
     // allow float weights to have a large range
     let float_params = RangerParams { max_weight: 128.0, min_weight: -128.0, ..Default::default() };
 
+    trainer.optimiser.set_params_for_weight("l0w", l0_params);
     trainer.optimiser.set_params_for_weight("l2w", float_params);
     trainer.optimiser.set_params_for_weight("l2b", float_params);
     trainer.optimiser.set_params_for_weight("l3w", float_params);
@@ -825,9 +833,9 @@ fn main() {
         viribinpack::ViriFilter::Custom(custom_filter_pipeline),
     );
 
-    trainer.load_from_checkpoint("checkpoints/bullet_r124-stage2-100");
-    // trainer.run(&stage_1_schedule, &settings, &data_loader);
-    // trainer.run(&stage_2_schedule, &settings, &data_loader);
+    //trainer.load_from_checkpoint("checkpoints/bullet_r124-stage2-100");
+    trainer.run(&stage_1_schedule, &settings, &data_loader);
+    trainer.run(&stage_2_schedule, &settings, &data_loader);
 
     for fen in [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
