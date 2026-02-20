@@ -440,10 +440,8 @@ impl SparseInputType for ChessBucketsMirroredWithThreats {
             let piece_type = piece & 7;
             let attack_bb = attacks_for(piece_type, sq, c, occ);
 
-            // Unbucketed piece-square feature (always active)
-            let stm_factorizer = self.factorizer_base + [0, 384][c] + pc + sq;
-            let ntm_factorizer = self.factorizer_base + [384, 0][c] + pc + (sq ^ 56);
-            f(stm_factorizer, ntm_factorizer);
+            // Factorized feature
+            f(self.factorizer_base + (stm_feat ^ stm_flip), self.factorizer_base + (ntm_feat ^ ntm_flip));
 
             // Find all pieces this piece attacks and emit threat features
             let attacked_pieces = attack_bb & occ;
@@ -697,7 +695,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r126"
+        "bullet_r127"
     };
 }
 
