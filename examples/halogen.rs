@@ -35,7 +35,7 @@ use bullet_lib::{
 /// possible. Depending on the piece and square, only certain target squares can be attacked. For example, a knight on
 /// c4 can only attack 8 squares, so it can only activate 8*12=96 threat inputs, not 64*12=768.
 ///
-/// We further reduce the input count by restricting which piece types can threaten which, because some threats are 
+/// We further reduce the input count by restricting which piece types can threaten which, because some threats are
 /// symmetric. E.g rook -> queen implies queen -> rook.
 /// - Pawn only threatens pawns, knights, and rooks (6 victims)
 /// - Knight threatens everyone (12 victims)
@@ -76,10 +76,7 @@ const fn compute_knight_attacks() -> [u64; 64] {
     while sq < 64 {
         let r = (sq / 8) as i32;
         let f = (sq % 8) as i32;
-        let deltas: [(i32, i32); 8] = [
-            (2, 1), (2, -1), (-2, 1), (-2, -1),
-            (1, 2), (1, -2), (-1, 2), (-1, -2),
-        ];
+        let deltas: [(i32, i32); 8] = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)];
         let mut bb = 0u64;
         let mut i = 0;
         while i < 8 {
@@ -103,10 +100,7 @@ const fn compute_king_attacks() -> [u64; 64] {
     while sq < 64 {
         let r = (sq / 8) as i32;
         let f = (sq % 8) as i32;
-        let deltas: [(i32, i32); 8] = [
-            (1, 0), (-1, 0), (0, 1), (0, -1),
-            (1, 1), (1, -1), (-1, 1), (-1, -1),
-        ];
+        let deltas: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
         let mut bb = 0u64;
         let mut i = 0;
         while i < 8 {
@@ -291,10 +285,7 @@ impl ThreatTables {
             "Threat table size mismatch! Expected 79856, got {total_threat_features}",
         );
 
-        Self {
-            total_threat_features,
-            lookup,
-        }
+        Self { total_threat_features, lookup }
     }
 
     /// Get the threat feature index for an attacker threatening a victim.
@@ -364,13 +355,7 @@ impl ChessBucketsMirroredWithThreats {
         let threat_base = factorizer_base + 768;
         let total_inputs = threat_base + tables.total_threat_features;
 
-        Self {
-            buckets: expanded,
-            num_buckets,
-            factorizer_base,
-            threat_base,
-            total_inputs,
-        }
+        Self { buckets: expanded, num_buckets, factorizer_base, threat_base, total_inputs }
     }
 }
 
@@ -461,7 +446,12 @@ impl SparseInputType for ChessBucketsMirroredWithThreats {
 
                     // Look up threat feature for both perspectives.
                     let stm_idx = match tables.threat_feature(
-                        piece_type, c, sq, vic_pt, vic_side, target_sq,
+                        piece_type,
+                        c,
+                        sq ^ stm_flip,
+                        vic_pt,
+                        vic_side,
+                        target_sq ^ stm_flip,
                     ) {
                         Some(idx) => idx,
                         None => continue, // not a tracked threat (can_threaten restriction)
@@ -469,7 +459,12 @@ impl SparseInputType for ChessBucketsMirroredWithThreats {
 
                     // NTM perspective: flip sides and mirror vertically
                     let ntm_idx = match tables.threat_feature(
-                        piece_type, c ^ 1, sq ^ 56, vic_pt, vic_side ^ 1, target_sq ^ 56,
+                        piece_type,
+                        c ^ 1,
+                        (sq ^ 56) ^ ntm_flip,
+                        vic_pt,
+                        vic_side ^ 1,
+                        (target_sq ^ 56) ^ ntm_flip,
                     ) {
                         Some(idx) => idx,
                         None => continue,
@@ -695,7 +690,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r127"
+        "bullet_r128"
     };
 }
 
@@ -730,7 +725,12 @@ fn main() {
             .transform(move |_, values| {
                 let king_piece_square = &values[..factoriser_offset];
                 let factoriser = &values[factoriser_offset..threats_offset];
-                factoriser.repeat(threat_inputs.num_buckets).iter().zip(king_piece_square.iter()).map(|(a, b)| a + b).collect()
+                factoriser
+                    .repeat(threat_inputs.num_buckets)
+                    .iter()
+                    .zip(king_piece_square.iter())
+                    .map(|(a, b)| a + b)
+                    .collect()
             })
             .quantise::<i16>(255)
             .round(),
@@ -804,7 +804,11 @@ fn main() {
             end_superbatch: stage_1_num_superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
-        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.001, final_lr: 0.0, final_superbatch: stage_1_num_superbatches },
+        lr_scheduler: lr::CosineDecayLR {
+            initial_lr: 0.001,
+            final_lr: 0.0,
+            final_superbatch: stage_1_num_superbatches,
+        },
         save_rate: 100,
     };
 
@@ -819,7 +823,11 @@ fn main() {
             end_superbatch: stage_2_num_superbatches,
         },
         wdl_scheduler: wdl::ConstantWDL { value: 1.0 },
-        lr_scheduler: lr::CosineDecayLR { initial_lr: 0.00001, final_lr: 0.0, final_superbatch: stage_2_num_superbatches },
+        lr_scheduler: lr::CosineDecayLR {
+            initial_lr: 0.00001,
+            final_lr: 0.0,
+            final_superbatch: stage_2_num_superbatches,
+        },
         save_rate: 100,
     };
 
