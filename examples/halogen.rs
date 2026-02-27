@@ -690,7 +690,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r128"
+        "bullet_r130"
     };
 }
 
@@ -698,7 +698,7 @@ const NET_ID: &str = net_id!();
 
 fn main() {
     // network hyperparams
-    let ft_size = 512;
+    let ft_size = 640;
     let l1_size = 16;
     let l2_size = 32;
     const NUM_OUTPUT_BUCKETS: usize = 8;
