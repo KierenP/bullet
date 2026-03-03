@@ -690,7 +690,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r128"
+        "bullet_r132"
     };
 }
 
@@ -803,7 +803,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: stage_1_num_superbatches,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
+        wdl_scheduler: wdl::LinearWDL { start: 0.0, end: 0.7 },
         lr_scheduler: lr::CosineDecayLR {
             initial_lr: 0.001,
             final_lr: 0.0,
