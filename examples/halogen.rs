@@ -782,9 +782,10 @@ fn main() {
     let threat_inputs = ChessBucketsMirroredWithThreats::new(BUCKET_LAYOUT);
     let num_inputs = threat_inputs.num_inputs();
 
-    // l0w split: PSQ features (king-bucketed + unbucketed) as i16/255, threat features as i8/64
+    // l0w split: PSQ features (king-bucketed + unbucketed) as i16/255, threat features as i8/255, piece-count as i16/255
     let factoriser_offset = threat_inputs.factorizer_base * ft_size;
     let threats_offset = threat_inputs.threat_base * ft_size;
+    let piece_count_offset = threat_inputs.piece_count_base * ft_size;
     let save_format = [
         SavedFormat::id("l0w")
             .transform(move |_, values| {
@@ -802,9 +803,13 @@ fn main() {
         SavedFormat::id("l0w")
             .transform(move |_, values| {
                 let max = 127.0 / 255.0;
-                values[threats_offset..].iter().map(|&v| v.clamp(-max, max)).collect()
+                values[threats_offset..piece_count_offset].iter().map(|&v| v.clamp(-max, max)).collect()
             })
             .quantise::<i8>(255)
+            .round(),
+        SavedFormat::id("l0w")
+            .transform(move |_, values| values[piece_count_offset..].to_vec())
+            .quantise::<i16>(255)
             .round(),
         SavedFormat::id("l0b").quantise::<i16>(255).round(),
         SavedFormat::id("l1w").quantise::<i16>(64).transpose().round(),
