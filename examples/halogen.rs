@@ -328,7 +328,13 @@ fn get_threat_tables() -> &'static ThreatTables {
 /// Feature layout:
 ///   [0, 768 * num_buckets)               : king-bucketed piece-square
 ///   [768 * num_buckets, +768)            : manual factorizer for king-bucketed portion (see below)
-///   [768 * num_buckets, ...)             : threat features
+///   [768 * num_buckets + 768, +threats)  : threat features
+///   [threat_base + threats, +30)         : piece-count threshold features
+///
+/// Piece-count features (15 per side, 30 total):
+///   queen>=1 (1) + rook>=2,>=1 (2) + bishop>=2,>=1 (2) + knight>=2,>=1 (2) + pawn>=8..>=1 (8) = 15
+const PIECE_COUNT_FEATURES_PER_SIDE: usize = 15;
+
 #[derive(Clone)]
 struct ChessBucketsMirroredWithThreats {
     buckets: [usize; 64],
@@ -337,6 +343,8 @@ struct ChessBucketsMirroredWithThreats {
     factorizer_base: usize,
     /// Base offset for threat features (= 768 * num_buckets + 768)
     threat_base: usize,
+    /// Base offset for piece-count features (= threat_base + total_threat_features)
+    piece_count_base: usize,
     /// Total number of inputs
     total_inputs: usize,
 }
@@ -353,9 +361,10 @@ impl ChessBucketsMirroredWithThreats {
         let tables = get_threat_tables();
         let factorizer_base = 768 * num_buckets;
         let threat_base = factorizer_base + 768;
-        let total_inputs = threat_base + tables.total_threat_features;
+        let piece_count_base = threat_base + tables.total_threat_features;
+        let total_inputs = piece_count_base + PIECE_COUNT_FEATURES_PER_SIDE * 2;
 
-        Self { buckets: expanded, num_buckets, factorizer_base, threat_base, total_inputs }
+        Self { buckets: expanded, num_buckets, factorizer_base, threat_base, piece_count_base, total_inputs }
     }
 }
 
@@ -384,8 +393,8 @@ impl SparseInputType for ChessBucketsMirroredWithThreats {
     }
 
     fn max_active(&self) -> usize {
-        // 32 king-bucketed + 32 unbucketed + threat features per piece
-        512
+        // 32 king-bucketed + 32 unbucketed + threat features per piece + 30 piece-count
+        544
     }
 
     fn map_features<F: FnMut(usize, usize)>(&self, pos: &Self::RequiredDataType, mut f: F) {
@@ -474,15 +483,71 @@ impl SparseInputType for ChessBucketsMirroredWithThreats {
                 }
             }
         }
+
+        // Piece-count threshold features
+        let mut piece_counts = [[0u8; 6]; 2]; // [side][piece_type]
+        for i in 0..count {
+            let (piece, _) = pieces[i];
+            let side = ((piece >> 3) & 1) as usize;
+            let pt = (piece & 7) as usize;
+            if pt < 6 {
+                piece_counts[side][pt] += 1;
+            }
+        }
+
+        for side in 0..2usize {
+            let counts = &piece_counts[side];
+            // STM pieces (side=0) → stm perspective: "my" features [0..15), ntm: "opp" [15..30)
+            // NSTM pieces (side=1) → stm perspective: "opp" [15..30), ntm: "my" [0..15)
+            let stm_base = self.piece_count_base + if side == 0 { 0 } else { PIECE_COUNT_FEATURES_PER_SIDE };
+            let ntm_base = self.piece_count_base + if side == 0 { PIECE_COUNT_FEATURES_PER_SIDE } else { 0 };
+
+            // Queens >= 1
+            if counts[QUEEN as usize] >= 1 {
+                f(stm_base, ntm_base);
+            }
+            // Rooks >= 2, >= 1
+            if counts[ROOK as usize] >= 2 {
+                f(stm_base + 1, ntm_base + 1);
+            }
+            if counts[ROOK as usize] >= 1 {
+                f(stm_base + 2, ntm_base + 2);
+            }
+            // Bishops >= 2, >= 1
+            if counts[BISHOP as usize] >= 2 {
+                f(stm_base + 3, ntm_base + 3);
+            }
+            if counts[BISHOP as usize] >= 1 {
+                f(stm_base + 4, ntm_base + 4);
+            }
+            // Knights >= 2, >= 1
+            if counts[KNIGHT as usize] >= 2 {
+                f(stm_base + 5, ntm_base + 5);
+            }
+            if counts[KNIGHT as usize] >= 1 {
+                f(stm_base + 6, ntm_base + 6);
+            }
+            // Pawns >= 8 down to >= 1
+            for k in (1..=8u8).rev() {
+                if counts[PAWN as usize] >= k {
+                    f(stm_base + 7 + (8 - k) as usize, ntm_base + 7 + (8 - k) as usize);
+                }
+            }
+        }
     }
 
     fn shorthand(&self) -> String {
         let tables = get_threat_tables();
-        format!("768x{}hm+768+{}t", self.num_buckets, tables.total_threat_features)
+        format!(
+            "768x{}hm+768+{}t+{}pc",
+            self.num_buckets,
+            tables.total_threat_features,
+            PIECE_COUNT_FEATURES_PER_SIDE * 2
+        )
     }
 
     fn description(&self) -> String {
-        "Horizontally mirrored, king bucketed psqt chess inputs with threat inputs".to_string()
+        "Horizontally mirrored, king bucketed psqt chess inputs with threat and piece-count inputs".to_string()
     }
 }
 
@@ -690,7 +755,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r130"
+        "bullet_r133"
     };
 }
 
