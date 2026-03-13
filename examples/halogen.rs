@@ -690,7 +690,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r130"
+        "bullet_r134"
     };
 }
 
@@ -781,12 +781,15 @@ fn main() {
             (out, loss)
         });
 
+    let default_ranger = RangerParams { beta1: 0.95, ..Default::default() };
+
     // cap l0 weights to 1.98 after factoriser is applied
-    let l0_params = RangerParams { max_weight: 0.99, min_weight: -0.99, ..Default::default() };
+    let l0_params = RangerParams { max_weight: 0.99, min_weight: -0.99, ..default_ranger };
 
     // allow float weights to have a large range
-    let float_params = RangerParams { max_weight: 128.0, min_weight: -128.0, ..Default::default() };
+    let float_params = RangerParams { max_weight: 128.0, min_weight: -128.0, ..default_ranger };
 
+    trainer.optimiser.set_params(default_ranger);
     trainer.optimiser.set_params_for_weight("l0w", l0_params);
     trainer.optimiser.set_params_for_weight("l2w", float_params);
     trainer.optimiser.set_params_for_weight("l2b", float_params);
@@ -803,7 +806,7 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: stage_1_num_superbatches,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: 0.7 },
+        wdl_scheduler: wdl::LinearWDL { start: 0.0, end: 0.7 },
         lr_scheduler: lr::CosineDecayLR {
             initial_lr: 0.001,
             final_lr: 0.0,
