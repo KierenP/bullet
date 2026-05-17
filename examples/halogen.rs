@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use bullet_lib::{
     game::{
-        formats::bulletformat::ChessBoard,
+        formats::{bulletformat::ChessBoard, montyformat::chess::Attacks},
         inputs::{SparseInputType, get_num_buckets},
         outputs::MaterialCount,
     },
@@ -69,143 +69,16 @@ const ROOK: u8 = 3;
 const QUEEN: u8 = 4;
 const KING: u8 = 5;
 
-/// Precomputed knight attack bitboards for each square
-const fn compute_knight_attacks() -> [u64; 64] {
-    let mut table = [0u64; 64];
-    let mut sq = 0usize;
-    while sq < 64 {
-        let r = (sq / 8) as i32;
-        let f = (sq % 8) as i32;
-        let deltas: [(i32, i32); 8] = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)];
-        let mut bb = 0u64;
-        let mut i = 0;
-        while i < 8 {
-            let nr = r + deltas[i].0;
-            let nf = f + deltas[i].1;
-            if nr >= 0 && nr < 8 && nf >= 0 && nf < 8 {
-                bb |= 1u64 << (nr * 8 + nf);
-            }
-            i += 1;
-        }
-        table[sq] = bb;
-        sq += 1;
-    }
-    table
-}
-
-/// Precomputed king attack bitboards for each square
-const fn compute_king_attacks() -> [u64; 64] {
-    let mut table = [0u64; 64];
-    let mut sq = 0usize;
-    while sq < 64 {
-        let r = (sq / 8) as i32;
-        let f = (sq % 8) as i32;
-        let deltas: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
-        let mut bb = 0u64;
-        let mut i = 0;
-        while i < 8 {
-            let nr = r + deltas[i].0;
-            let nf = f + deltas[i].1;
-            if nr >= 0 && nr < 8 && nf >= 0 && nf < 8 {
-                bb |= 1u64 << (nr * 8 + nf);
-            }
-            i += 1;
-        }
-        table[sq] = bb;
-        sq += 1;
-    }
-    table
-}
-
-/// Precomputed pawn attack bitboards for each square, per side (0=STM, 1=NSTM)
-/// STM pawns attack "forward" (higher ranks), NSTM pawns attack "backward" (lower ranks)
-/// In ChessBoard, STM's perspective: rank 0 = back rank, rank 7 = opponent's back rank
-const fn compute_pawn_attacks() -> [[u64; 64]; 2] {
-    let mut table = [[0u64; 64]; 2];
-    let mut sq = 0usize;
-    while sq < 64 {
-        let r = (sq / 8) as i32;
-        let f = (sq % 8) as i32;
-        // STM pawn attacks upward (rank + 1)
-        if r + 1 < 8 {
-            if f - 1 >= 0 {
-                table[0][sq] |= 1u64 << ((r + 1) * 8 + (f - 1));
-            }
-            if f + 1 < 8 {
-                table[0][sq] |= 1u64 << ((r + 1) * 8 + (f + 1));
-            }
-        }
-        // NSTM pawn attacks downward (rank - 1)
-        if r - 1 >= 0 {
-            if f - 1 >= 0 {
-                table[1][sq] |= 1u64 << ((r - 1) * 8 + (f - 1));
-            }
-            if f + 1 < 8 {
-                table[1][sq] |= 1u64 << ((r - 1) * 8 + (f + 1));
-            }
-        }
-        sq += 1;
-    }
-    table
-}
-
-static KNIGHT_ATTACKS: [u64; 64] = compute_knight_attacks();
-static KING_ATTACKS: [u64; 64] = compute_king_attacks();
-static PAWN_ATTACKS: [[u64; 64]; 2] = compute_pawn_attacks();
-
-/// Classical sliding attack generation using ray scanning with blockers
-fn bishop_attacks(sq: usize, occ: u64) -> u64 {
-    let mut attacks = 0u64;
-    let directions: [(i32, i32); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
-    for &(dr, df) in &directions {
-        let mut r = (sq / 8) as i32 + dr;
-        let mut f = (sq % 8) as i32 + df;
-        while r >= 0 && r < 8 && f >= 0 && f < 8 {
-            let s = (r * 8 + f) as usize;
-            attacks |= 1u64 << s;
-            if occ & (1u64 << s) != 0 {
-                break;
-            }
-            r += dr;
-            f += df;
-        }
-    }
-    attacks
-}
-
-fn rook_attacks(sq: usize, occ: u64) -> u64 {
-    let mut attacks = 0u64;
-    let directions: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
-    for &(dr, df) in &directions {
-        let mut r = (sq / 8) as i32 + dr;
-        let mut f = (sq % 8) as i32 + df;
-        while r >= 0 && r < 8 && f >= 0 && f < 8 {
-            let s = (r * 8 + f) as usize;
-            attacks |= 1u64 << s;
-            if occ & (1u64 << s) != 0 {
-                break;
-            }
-            r += dr;
-            f += df;
-        }
-    }
-    attacks
-}
-
-fn queen_attacks(sq: usize, occ: u64) -> u64 {
-    bishop_attacks(sq, occ) | rook_attacks(sq, occ)
-}
-
 /// Get attack bitboard for a given piece type on a given square.
 /// `side` is 0 for STM, 1 for NSTM (only matters for pawns).
 fn attacks_for(piece_type: u8, sq: usize, side: usize, occ: u64) -> u64 {
     match piece_type {
-        PAWN => PAWN_ATTACKS[side][sq],
-        KNIGHT => KNIGHT_ATTACKS[sq],
-        BISHOP => bishop_attacks(sq, occ),
-        ROOK => rook_attacks(sq, occ),
-        QUEEN => queen_attacks(sq, occ),
-        KING => KING_ATTACKS[sq],
+        PAWN => Attacks::pawn(sq, side),
+        KNIGHT => Attacks::knight(sq),
+        BISHOP => Attacks::bishop(sq, occ),
+        ROOK => Attacks::rook(sq, occ),
+        QUEEN => Attacks::queen(sq, occ),
+        KING => Attacks::king(sq),
         _ => 0,
     }
 }
@@ -339,6 +212,7 @@ struct ChessBucketsMirroredWithThreats {
     threat_base: usize,
     /// Total number of inputs
     total_inputs: usize,
+    threat_tables: &'static ThreatTables,
 }
 
 impl ChessBucketsMirroredWithThreats {
@@ -350,12 +224,12 @@ impl ChessBucketsMirroredWithThreats {
             *elem = buckets[(idx / 8) * 4 + [0, 1, 2, 3, 3, 2, 1, 0][idx % 8]];
         }
 
-        let tables = get_threat_tables();
+        let threat_tables = get_threat_tables();
         let factorizer_base = 768 * num_buckets;
         let threat_base = factorizer_base + 768;
-        let total_inputs = threat_base + tables.total_threat_features;
+        let total_inputs = threat_base + threat_tables.total_threat_features;
 
-        Self { buckets: expanded, num_buckets, factorizer_base, threat_base, total_inputs }
+        Self { buckets: expanded, num_buckets, factorizer_base, threat_base, total_inputs, threat_tables }
     }
 }
 
@@ -385,11 +259,11 @@ impl SparseInputType for ChessBucketsMirroredWithThreats {
 
     fn max_active(&self) -> usize {
         // 32 king-bucketed + 32 unbucketed + threat features per piece
-        512
+        32 + 32 + 96
     }
 
     fn map_features<F: FnMut(usize, usize)>(&self, pos: &Self::RequiredDataType, mut f: F) {
-        let tables = get_threat_tables();
+        let tables = self.threat_tables;
 
         // Determine king-side flips and bucket offsets (same as ChessBucketsMirrored)
         let our_ksq = pos.our_ksq() as usize;
@@ -500,10 +374,10 @@ const DEBUG_PRINT_INTERVAL: u64 = 10_000_000;
 /// Values based on Stockfish's PyTorch NNUE trainer (0-2 pieces set to 0 as impossible)
 #[rustfmt::skip]
 const TARGET_DISTRIBUTION: [f32; 33] = [
-    0.000000, 0.000000, 0.000000, 1.339844, 1.437500, 1.527344, 1.609375, 1.683594, 
-    1.750000, 1.808594, 1.859375, 1.902344, 1.937500, 1.964844, 1.984375, 1.996094, 
-    2.000000, 1.996094, 1.984375, 1.964844, 1.937500, 1.902344, 1.859375, 1.808594, 
-    1.750000, 1.683594, 1.609375, 1.527344, 1.437500, 1.339844, 1.234375, 1.121094, 
+    0.000000, 0.000000, 0.000000, 1.339844, 1.437500, 1.527344, 1.609375, 1.683594,
+    1.750000, 1.808594, 1.859375, 1.902344, 1.937500, 1.964844, 1.984375, 1.996094,
+    2.000000, 1.996094, 1.984375, 1.964844, 1.937500, 1.902344, 1.859375, 1.808594,
+    1.750000, 1.683594, 1.609375, 1.527344, 1.437500, 1.339844, 1.234375, 1.121094,
     1.000000
 ];
 
@@ -690,7 +564,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
 
 macro_rules! net_id {
     () => {
-        "bullet_r134"
+        "bullet_r135"
     };
 }
 
@@ -776,8 +650,9 @@ fn main() {
             out = l2.forward(out).select(buckets).crelu();
             out = l3.forward(out).select(buckets);
 
-            // squared error loss
-            let loss = out.sigmoid().squared_error(targets);
+            // asymmetric squared error: punish too high scores more
+            const SKEW: f32 = 0.5;
+            let loss = out.sigmoid().asymmetric_squared_error(targets, SKEW);
             (out, loss)
         });
 
@@ -834,7 +709,7 @@ fn main() {
         save_rate: 100,
     };
 
-    let settings = LocalSettings { threads: 4, test_set: None, output_directory: "checkpoints", batch_queue_size: 32 };
+    let settings = LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 32 };
     let data_loader = ViriBinpackLoader::new(
         "..\\..\\chess\\data\\datagen3-22.viri",
         1024 * 32,
