@@ -562,13 +562,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
     true
 }
 
-macro_rules! net_id {
-    () => {
-        "bullet_r135"
-    };
-}
-
-const NET_ID: &str = net_id!();
+const NET_ID: &str = "bullet_r136";
 
 fn main() {
     // network hyperparams
@@ -591,7 +585,7 @@ fn main() {
     let threat_inputs = ChessBucketsMirroredWithThreats::new(BUCKET_LAYOUT);
     let num_inputs = threat_inputs.num_inputs();
 
-    // l0w split: PSQ features (king-bucketed + unbucketed) as i16/255, threat features as i8/64
+    // l0w split: PSQ features (king-bucketed + unbucketed) as i16/255, threat features as i8/255
     let factoriser_offset = threat_inputs.factorizer_base * ft_size;
     let threats_offset = threat_inputs.threat_base * ft_size;
     let save_format = [
@@ -630,7 +624,14 @@ fn main() {
         .output_buckets(MaterialCount::<8>)
         .optimiser(Ranger)
         .save_format(&save_format)
-        .build_custom(|builder, (stm, ntm, buckets), targets| {
+        .loss_fn(|output, target| {
+            // asymmetric squared error: punish too high scores more
+            const SKEW: f32 = 0.15;
+            let e = output.sigmoid() - target;
+            let relu_e = e.relu();
+            e * e + SKEW * relu_e * relu_e
+        })
+        .build(|builder, stm, ntm, buckets| {
             // input layer weights
             let l0 = builder.new_affine("l0", num_inputs, ft_size);
 
@@ -650,10 +651,7 @@ fn main() {
             out = l2.forward(out).select(buckets).crelu();
             out = l3.forward(out).select(buckets);
 
-            // asymmetric squared error: punish too high scores more
-            const SKEW: f32 = 0.5;
-            let loss = out.sigmoid().asymmetric_squared_error(targets, SKEW);
-            (out, loss)
+            out
         });
 
     let default_ranger = RangerParams { beta1: 0.95, ..Default::default() };
