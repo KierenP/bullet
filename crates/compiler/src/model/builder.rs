@@ -353,16 +353,6 @@ impl<'a> ModelNode<'a> {
         diff * diff
     }
 
-    /// Asymmetric squared error: `e^2 + skew * relu(e)^2`
-    ///
-    /// Where `e = self - target`. When `skew = 0` this is identical to `squared_error`.
-    /// Overestimates (`e > 0`) incur a `(1 + skew)x` penalty relative to underestimates.
-    pub fn asymmetric_squared_error(self, target: Self, skew: f32) -> Self {
-        let diff = self - target;
-        let relu_diff = diff.relu();
-        diff * diff + skew * relu_diff * relu_diff
-    }
-
     pub fn power_error(self, targets: Self, power: f32) -> Self {
         (self - targets).abs_pow(power)
     }
