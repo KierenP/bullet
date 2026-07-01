@@ -562,7 +562,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
     true
 }
 
-const NET_ID: &str = "bullet_r136";
+const NET_ID: &str = "bullet_r138";
 
 fn main() {
     // network hyperparams
@@ -709,7 +709,7 @@ fn main() {
 
     let settings = LocalSettings { threads: 8, test_set: None, output_directory: "checkpoints", batch_queue_size: 32 };
     let data_loader = ViriBinpackLoader::new(
-        "..\\..\\chess\\data\\datagen3-22.viri",
+        "..\\..\\chess\\data\\datagen3-23.viri",
         1024 * 32,
         4,
         viribinpack::ViriFilter::Custom(custom_filter_pipeline),
