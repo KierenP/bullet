@@ -562,11 +562,11 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
     true
 }
 
-const NET_ID: &str = "bullet_r138";
+const NET_ID: &str = "bullet_r139";
 
 fn main() {
     // network hyperparams
-    let ft_size = 640;
+    let ft_size = 768;
     let l1_size = 16;
     let l2_size = 32;
     const NUM_OUTPUT_BUCKETS: usize = 8;
@@ -641,8 +641,9 @@ fn main() {
             let l3 = builder.new_affine("l3", l2_size, NUM_OUTPUT_BUCKETS);
 
             // input layer inference
-            let stm_subnet = l0.forward(stm).crelu().pairwise_mul();
-            let ntm_subnet = l0.forward(ntm).crelu().pairwise_mul();
+            let ft = |input, start, end| l0.slice(start, end).forward(input).crelu();
+            let stm_subnet = ft(stm, 0, ft_size / 2) * ft(stm, ft_size / 2, ft_size);
+            let ntm_subnet = ft(ntm, 0, ft_size / 2) * ft(ntm, ft_size / 2, ft_size);
             let mut out = stm_subnet.concat(ntm_subnet);
 
             // layerstack inference
