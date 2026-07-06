@@ -562,7 +562,7 @@ fn custom_filter_pipeline(board: &Board, mv: viriformat::chess::chessmove::Move,
     true
 }
 
-const NET_ID: &str = "bullet_r139";
+const NET_ID: &str = "bullet_r140";
 
 fn main() {
     // network hyperparams
@@ -572,14 +572,14 @@ fn main() {
     const NUM_OUTPUT_BUCKETS: usize = 8;
     #[rustfmt::skip]
     const BUCKET_LAYOUT: [usize; 32] = [
-        0, 1, 2, 3,
-        4, 4, 5, 5,
-        6, 6, 6, 6,
-        6, 6, 6, 6,
-        7, 7, 7, 7,
-        7, 7, 7, 7,
-        7, 7, 7, 7,
-        7, 7, 7, 7,
+         0,  1,  2,  3,
+         4,  5,  6,  7,
+         8,  9, 10, 11,
+         8,  9, 10, 11,
+        12, 12, 13, 13,
+        12, 12, 13, 13,
+        14, 14, 15, 15,
+        14, 14, 15, 15,
     ];
 
     let threat_inputs = ChessBucketsMirroredWithThreats::new(BUCKET_LAYOUT);
